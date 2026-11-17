@@ -1,0 +1,19 @@
+{
+  "name": "secret-leak-guard-frontend",
+  "version": "2.0.0",
+  "private": true,
+  "description": "Enterprise Security Dashboard for Secret Leak Guard v2.0",
+  "dependencies": {
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.24.0",
+    "@babel/preset-env": "^7.24.0",
+    "@babel/preset-react": "^7.24.0",
+    "esbuild": "^0.20.2"
+  },
+  "scripts": {
+    "build": "node build.js"
+  }
+}

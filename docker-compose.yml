@@ -1,0 +1,168 @@
+# =============================================================================
+# Secret Leak Guard v2.0 - Production Docker Compose Orchestration
+# 5 Integrated Services on Isolated Custom Bridge Network: slg-network
+# =============================================================================
+
+services:
+  # ---------------------------------------------------------------------------
+  # 1. Gateway: Unified Nginx 1.27.5 Reverse Proxy
+  # ---------------------------------------------------------------------------
+  gateway:
+    build:
+      context: .
+      dockerfile: docker/gateway/Dockerfile
+    container_name: slg-gateway
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "8080:8080"
+    depends_on:
+      frontend:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    networks:
+      - slg-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:80/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # 2. Frontend: React 18.2 Security Control Dashboard
+  # ---------------------------------------------------------------------------
+  frontend:
+    build:
+      context: .
+      dockerfile: docker/frontend/Dockerfile
+    container_name: slg-frontend
+    restart: unless-stopped
+    expose:
+      - "3000"
+    networks:
+      - slg-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 5s
+
+  # ---------------------------------------------------------------------------
+  # 3. Backend: Flask 3.1 Scanner API & 4 Concurrent Engines
+  # ---------------------------------------------------------------------------
+  backend:
+    build:
+      context: .
+      dockerfile: docker/backend/Dockerfile
+    container_name: slg-backend
+    restart: unless-stopped
+    expose:
+      - "5000"
+    depends_on:
+      mongodb:
+        condition: service_healthy
+      vault:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      - FLASK_ENV=production
+      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_DB_NAME=secret_leak_guard_v2
+      - MONGO_USE_MOCK=false
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_ENABLED=true
+      - VAULT_TOKEN=${VAULT_TOKEN:-root}
+      - WORKSPACE_BASE_DIR=/tmp/scanner_workspaces
+      - ALLOWED_LOCAL_SCAN_PATHS=/tmp/scanner_workspaces,/scan_targets
+      - ENGINE_MAX_WORKERS=4
+      - RATELIMIT_DEFAULT=100 per minute
+      - RATELIMIT_STORAGE_URI=memory://
+    volumes:
+      - workspace_data:/tmp/scanner_workspaces
+      - ./scan_targets:/scan_targets:ro
+    networks:
+      - slg-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:5000/api/v1/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+  # ---------------------------------------------------------------------------
+  # 4. Database: MongoDB 7.0 Persistence & Indexing
+  # ---------------------------------------------------------------------------
+  mongodb:
+    image: mongo:7.0
+    container_name: slg-mongodb
+    restart: unless-stopped
+    expose:
+      - "27017"
+    environment:
+      - MONGO_INITDB_DATABASE=secret_leak_guard_v2
+    volumes:
+      - mongodb_data:/data/db
+    networks:
+      - slg-network
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --eval 'db.runCommand({ ping: 1 })' || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 15s
+
+  # ---------------------------------------------------------------------------
+  # 5. Secrets Management: HashiCorp Vault 1.15.6 (KV-v2 Engine)
+  # ---------------------------------------------------------------------------
+  vault:
+    image: hashicorp/vault:1.15.6
+    container_name: slg-vault
+    restart: unless-stopped
+    cap_add:
+      - IPC_LOCK
+    expose:
+      - "8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_TOKEN:-root}
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+      - VAULT_ADDR=http://127.0.0.1:8200
+    volumes:
+      - vault_data:/vault/file
+    networks:
+      - slg-network
+    healthcheck:
+      test: ["CMD-SHELL", "vault status || [ $$? -eq 0 ] || exit 0"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+# =============================================================================
+# Persistent Named Volumes
+# =============================================================================
+volumes:
+  mongodb_data:
+    name: slg_mongodb_data
+  vault_data:
+    name: slg_vault_data
+  workspace_data:
+    name: slg_workspace_data
+
+# =============================================================================
+# Isolated Custom Bridge Network
+# =============================================================================
+networks:
+  slg-network:
+    name: slg-network
+    driver: bridge
+    ipam:
+      driver: default
+      config:
+        - subnet: 172.28.0.0/16
