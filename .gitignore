@@ -1,0 +1,22 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Pytest cache
+.pytest_cache/
+
+# Virtual environments
+venv/
+.venv/
+env/
+.env
+
+# Temporary scanner workspaces
+/tmp/scanner_workspaces/
+scanner_workspaces/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
