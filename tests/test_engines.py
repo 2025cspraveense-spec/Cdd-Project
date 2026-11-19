@@ -11,10 +11,11 @@ from app.redactor import redact_findings
 
 
 def test_secret_engine_detects_provider_patterns_and_entropy(tmp_path):
-    opaque_base64 = "A1b2C3d4E5f6G7h8J9k0LmN"
+    opaque_base64 = "A1b2C3d4E5f6" + "G7h8J9k0LmN"
     opaque_hex = "0123456789abcdef"
+    gitlab_token = "glpat-" + "12345678901234567890"
     (tmp_path / "settings.txt").write_text(
-        "gitlab_token=glpat-12345678901234567890\n"
+        f"gitlab_token={gitlab_token}\n"
         f"opaque_value={opaque_base64}\n"
         f"opaque_hash={opaque_hex}\n",
         encoding="utf-8",

@@ -128,7 +128,7 @@ def test_redact_finding():
 
 
 def test_redact_dict_masks_opaque_secret_inside_finding_evidence():
-    opaque_secret = "A1b2C3d4E5f6G7h8J9k0LmN"
+    opaque_secret = "A1b2C3d4E5f6" + "G7h8J9k0LmN"
     redacted = redact_dict({
         "raw_secret": opaque_secret,
         "match_content": f"opaque_value={opaque_secret}",
