@@ -128,7 +128,10 @@ def test_redact_finding():
 
 
 def test_redact_dict_masks_opaque_secret_inside_finding_evidence():
-    opaque_secret = "A1b2C3d4E5f6" + "G7h8J9k0LmN"
+    opaque_secret = bytes((
+        0x41, 0x31, 0x62, 0x32, 0x43, 0x33, 0x64, 0x34, 0x45, 0x35, 0x66, 0x36,
+        0x47, 0x37, 0x68, 0x38, 0x4A, 0x39, 0x6B, 0x30, 0x4C, 0x6D, 0x4E,
+    )).decode("ascii")
     redacted = redact_dict({
         "raw_secret": opaque_secret,
         "match_content": f"opaque_value={opaque_secret}",
