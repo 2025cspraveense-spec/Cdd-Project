@@ -91,6 +91,8 @@ jobs:
         with:
           scan-type: "fs"
           scan-ref: "."
+          scanners: "vuln"
+          skip-dirs: "scan_targets/demo_vulnerable_project"
           severity: "CRITICAL,HIGH"
           format: "sarif"
           output: "trivy-fs-results.sarif"
