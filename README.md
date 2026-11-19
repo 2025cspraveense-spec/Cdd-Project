@@ -59,7 +59,7 @@
 .
 ├── docker-compose.yml            # 5-Service Docker Compose orchestration on slg-network
 ├── .env.example                  # Environment configuration template
-├── requirements.txt              # Backend production dependencies (Flask 3.1, Gunicorn, hvac, pymongo)
+├── requirements.txt              # Backend dependencies, including ReportLab PDF generation
 ├── config.py                     # Multi-environment runtime configuration
 ├── run.py                        # Backend application entrypoint
 ├── README.md                     # Platform architecture & operations documentation
@@ -81,15 +81,15 @@
 │   ├── public/index.html         # Single Page Application HTML shell
 │   └── src/
 │       ├── index.js              # React 18.2 entrypoint
-│       ├── App.js                # Interactive Security Control Center Dashboard
-│       └── App.css               # Futuristic dark-mode security operations styling
+│       ├── App.js                # Authenticated API-backed dashboard and scan workflows
+│       └── App.css               # Responsive dark glassmorphic dashboard styling
 ├── app/                          # Flask 3.1 REST API & Analysis Engine Package
 │   ├── __init__.py               # Application factory, rate limiter, redacting logging
 │   ├── auth.py                   # PyJWT, bcrypt hashing, RBAC decorators (@require_role)
 │   ├── db.py                     # MongoDB 7.0 client, compound & TTL indexes, mongomock fallback
 │   ├── ingestion.py              # 4 Ingestion modes, canonical Zip-Slip defense, SSRF blocker
 │   ├── redactor.py               # Strict redaction (preserves first 4 chars: AKIA****************)
-│   ├── routes.py                 # REST API endpoints (/api/v1/auth, /api/v1/scans, /api/v1/health)
+│   ├── routes.py                 # Auth, scans, metrics, and redacted PDF/HTML/JSON/SARIF exports
 │   ├── scanner_orchestrator.py   # ThreadPoolExecutor concurrency, state machine, lifecycle
 │   ├── scoring.py                # Weighted risk scoring, SHA-256 fingerprinting, grading
 │   ├── vault_client.py           # HashiCorp Vault hvac KV-v2 integration with fallback
@@ -114,6 +114,8 @@
     ├── test_scoring.py
     └── test_vault_client.py
 ```
+
+---
 
 ---
 
@@ -250,3 +252,26 @@ docker-compose ps
 # - HashiCorp Vault UI:       http://localhost/vault/
 # - Alternative Port:         http://localhost:8080/
 ```
+
+---
+
+## 8. Dashboard Reports & Live Demonstration
+
+The authenticated dashboard supports archive uploads, local scan paths, HTTPS
+Git repositories, and inline Dockerfiles. Scan status and progress are polled
+from the Flask API; completed findings include severity, source location,
+redacted evidence, and remediation guidance. Historical risk scores are shown
+for the selected project.
+
+Completed scans can be exported through
+`GET /api/v1/scans/<job_id>/reports/<format>` with a bearer token. Supported
+formats are `pdf` (vector executive report), `html`, `json`, and `sarif`
+(OASIS SARIF 2.1.0). Report downloads are unavailable until a scan completes.
+Credentials are redacted before report generation and API responses.
+
+For a live demonstration, provision an analyst account, start the stack, then
+select **Local path** in the dashboard and scan
+`/scan_targets/demo_vulnerable_project`. This deliberately vulnerable sample
+contains nonfunctional placeholder values and examples for the secrets, SAST,
+SCA, and container engines. Download its PDF from the report controls. Never
+deploy the sample application.

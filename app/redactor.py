@@ -54,6 +54,10 @@ REGEX_PATTERNS: List[re.Pattern] = [
     re.compile(r"(?i)(bearer\s+)([A-Za-z0-9\-_=]+\.[A-Za-z0-9\-_=]+\.?[A-Za-z0-9\-_=]*)"),
 ]
 
+INLINE_CREDENTIAL_ASSIGNMENT = re.compile(
+    r"""(?i)(?P<prefix>\b(?:password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|api[_-]?key|aws[_-]?secret[_-]?access[_-]?key|secret(?:[_-]?key)?|client[_-]?secret|credential)s?["']?\s*[:=]\s*)(?:(?P<quote>['"])(?P<quoted>(?:\\.|[^\\'"\r\n])*)(?P=quote)|(?P<bare>[^\s,'";]+))"""
+)
+
 
 def redact_secret(value: Any) -> str:
     """Centralized redaction utility that preserves ONLY the first 4 characters.
@@ -93,6 +97,15 @@ def redact_text(text: str) -> str:
         "-----BEGIN PRIVATE KEY-----\n[REDACTED PRIVATE KEY]\n-----END PRIVATE KEY-----",
         sanitized
     )
+
+    def _redact_assignment(match: re.Match) -> str:
+        secret = match.group("quoted") if match.group("quote") else match.group("bare")
+        redacted = redact_secret(secret)
+        if match.group("quote"):
+            return f"{match.group('prefix')}{match.group('quote')}{redacted}{match.group('quote')}"
+        return f"{match.group('prefix')}{redacted}"
+
+    sanitized = INLINE_CREDENTIAL_ASSIGNMENT.sub(_redact_assignment, sanitized)
 
     # Redact AWS keys
     sanitized = re.sub(r"\b(AKIA[0-9A-Z]{16})\b", lambda m: redact_secret(m.group(1)), sanitized)

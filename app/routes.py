@@ -1,12 +1,17 @@
 """REST API Routes & Controllers for Secret Leak Guard v2.0."""
 
+import html
+import io
+import json
 import os
 import tempfile
 import uuid
 from typing import Any, Dict
-from flask import Blueprint, current_app, g, jsonify, request
+from xml.sax.saxutils import escape
+from flask import Blueprint, current_app, g, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
+from app.redactor import redact_dict
 from app.auth import (
     Role,
     generate_jwt_token,
@@ -17,7 +22,6 @@ from app.auth import (
     validate_register_payload,
     verify_password,
 )
-from app.redactor import redact_dict
 from app.scanner_orchestrator import ScanStatus
 
 api_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
@@ -302,6 +306,209 @@ def get_scan_results(job_id: str):
 
     # Strict redaction across API boundary
     return jsonify(redact_dict(results_data)), 200
+
+
+@api_bp.route("/scans/<job_id>/reports/<report_format>", methods=["GET"])
+@require_auth
+def download_scan_report(job_id: str, report_format: str):
+    """Download a redacted scan report as PDF, HTML, JSON, or SARIF 2.1.0."""
+    formats = {
+        "pdf": ("application/pdf", "pdf"),
+        "html": ("text/html; charset=utf-8", "html"),
+        "json": ("application/json", "json"),
+        "sarif": ("application/sarif+json", "sarif"),
+    }
+    if report_format not in formats:
+        return jsonify({
+            "status": "error",
+            "error": "Unsupported report format. Choose pdf, html, json, or sarif.",
+        }), 400
+
+    report = current_app.extensions["db"].get_scan_report(job_id)
+    if not report:
+        return jsonify({"status": "error", "error": "Scan job not found", "job_id": job_id}), 404
+    if report.get("status") != ScanStatus.COMPLETED:
+        return jsonify({
+            "status": "error",
+            "error": "Reports are available after the scan has completed.",
+            "scan_status": report.get("status"),
+        }), 409
+
+    report = redact_dict(report)
+    findings = report.get("findings", [])
+    scores = report.get("scores") or {}
+    summary = {
+        "job_id": report.get("job_id"),
+        "project_id": report.get("project_id"),
+        "created_at": str(report.get("created_at", "")),
+        "grade": report.get("grade"),
+        "scores": scores,
+        "findings": findings,
+    }
+    mime_type, extension = formats[report_format]
+    filename = f"security-report-{secure_filename(str(job_id))}.{extension}"
+
+    if report_format == "json":
+        payload = json.dumps(summary, indent=2, ensure_ascii=False).encode("utf-8")
+    elif report_format == "sarif":
+        rules = {}
+        results = []
+        for finding in findings:
+            rule_id = str(finding.get("rule_id") or "UNKNOWN")
+            rules.setdefault(rule_id, {
+                "id": rule_id,
+                "shortDescription": {"text": finding.get("description", "Security finding")},
+                "help": {"text": finding.get("remediation", "Review and remediate this finding.")},
+                "properties": {"category": finding.get("category", finding.get("engine_name", "Security"))},
+            })
+            severity = str(finding.get("severity", "info")).lower()
+            level = "error" if severity in ("critical", "high") else "warning" if severity == "medium" else "note"
+            results.append({
+                "ruleId": rule_id,
+                "level": level,
+                "message": {"text": finding.get("description", "Security finding")},
+                "locations": [{
+                    "physicalLocation": {
+                        "artifactLocation": {"uri": str(finding.get("file_path", ""))},
+                        "region": {"startLine": max(1, int(finding.get("line_number") or 1))},
+                    },
+                }],
+                "properties": {
+                    "severity": severity,
+                    "category": finding.get("category", finding.get("engine_name", "Security")),
+                    "remediation": finding.get("remediation", ""),
+                    "redactedSnippet": finding.get("match_content", ""),
+                },
+            })
+        payload = json.dumps({
+            "$schema": "https://json.schemastore.org/sarif-2.1.0.json",
+            "version": "2.1.0",
+            "runs": [{
+                "tool": {"driver": {
+                    "name": "Secret Leak Guard",
+                    "version": current_app.config.get("APP_VERSION", "2.0.0"),
+                    "rules": list(rules.values()),
+                }},
+                "results": results,
+                "properties": {
+                    "projectId": summary["project_id"],
+                    "riskScore": scores.get("final_score", 0),
+                    "securityGrade": summary["grade"],
+                    "severityCounts": scores.get("severity_counts", {}),
+                },
+            }],
+        }, indent=2, ensure_ascii=False).encode("utf-8")
+    elif report_format == "html":
+        severity_counts = scores.get("severity_counts", {})
+        severity_rows = "".join(
+            f"<tr><th>{html.escape(str(severity).title())}</th><td>{int(count or 0)}</td></tr>"
+            for severity, count in severity_counts.items()
+        )
+        finding_rows = "".join(
+            "<tr>"
+            f"<td>{html.escape(str(finding.get('severity', 'info')).upper())}</td>"
+            f"<td>{html.escape(str(finding.get('rule_id', '')))}</td>"
+            f"<td>{html.escape(str(finding.get('file_path', '')))}:{int(finding.get('line_number') or 0)}</td>"
+            f"<td>{html.escape(str(finding.get('description', '')))}"
+            f"<br><small>{html.escape(str(finding.get('remediation', '')))}</small></td>"
+            "</tr>"
+            for finding in findings
+        )
+        document = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width">
+<title>Security report - {html.escape(str(summary['project_id'] or 'Project'))}</title>
+<style>body{{font:15px system-ui,sans-serif;max-width:1100px;margin:40px auto;padding:0 20px;color:#172033}}
+h1,h2{{color:#102a43}}table{{border-collapse:collapse;width:100%;margin:16px 0 32px}}
+th,td{{border:1px solid #d5deea;padding:10px;text-align:left}}th{{background:#edf3f8}}
+.score{{font-size:1.2rem;font-weight:700}}</style></head><body>
+<h1>Security assessment</h1><p><strong>Project:</strong> {html.escape(str(summary['project_id'] or ''))}</p>
+<p><strong>Scan:</strong> {html.escape(str(summary['job_id'] or ''))} · {html.escape(summary['created_at'])}</p>
+<p class="score">Risk score: {int(scores.get('final_score') or 0)}/100 · Grade: {html.escape(str(summary['grade'] or 'N/A'))}</p>
+<h2>Severity matrix</h2><table><thead><tr><th>Severity</th><th>Findings</th></tr></thead><tbody>{severity_rows}</tbody></table>
+<h2>Findings and remediation</h2><table><thead><tr><th>Severity</th><th>Rule</th><th>Location</th><th>Description / remediation</th></tr></thead>
+<tbody>{finding_rows or '<tr><td colspan="4">No findings.</td></tr>'}</tbody></table></body></html>"""
+        payload = document.encode("utf-8")
+    else:
+        from reportlab.lib import colors
+        from reportlab.lib.enums import TA_CENTER
+        from reportlab.lib.pagesizes import A4
+        from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+        from reportlab.lib.units import mm
+        from reportlab.platypus import (
+            Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle,
+        )
+
+        buffer = io.BytesIO()
+        styles = getSampleStyleSheet()
+        styles.add(ParagraphStyle(name="ReportTitle", parent=styles["Title"], alignment=TA_CENTER, textColor=colors.HexColor("#102a43")))
+        styles.add(ParagraphStyle(name="SmallCell", parent=styles["BodyText"], fontSize=8, leading=10, wordWrap="CJK"))
+        styles.add(ParagraphStyle(name="SectionHeading", parent=styles["Heading2"], textColor=colors.HexColor("#087e8b"), spaceBefore=10))
+        document = SimpleDocTemplate(buffer, pagesize=A4, rightMargin=17 * mm, leftMargin=17 * mm, topMargin=16 * mm, bottomMargin=16 * mm)
+        story = [
+            Paragraph("Security Assessment", styles["ReportTitle"]),
+            Spacer(1, 8),
+            Paragraph(f"<b>Project:</b> {escape(str(summary['project_id'] or ''))}", styles["BodyText"]),
+            Paragraph(f"<b>Scan ID:</b> {escape(str(summary['job_id'] or ''))}", styles["BodyText"]),
+            Paragraph(f"<b>Generated:</b> {escape(summary['created_at'])}", styles["BodyText"]),
+            Paragraph(
+                f"<b>Risk score:</b> {int(scores.get('final_score') or 0)}/100"
+                f"&nbsp;&nbsp;&nbsp; <b>Security grade:</b> {escape(str(summary['grade'] or 'N/A'))}",
+                styles["BodyText"],
+            ),
+            Paragraph("Severity matrix", styles["SectionHeading"]),
+        ]
+        severity_counts = scores.get("severity_counts", {})
+        severity_data = [["Severity", "Findings"]] + [
+            [str(severity).title(), int(count or 0)]
+            for severity, count in severity_counts.items()
+        ]
+        severity_table = Table(severity_data, colWidths=[90 * mm, 60 * mm], repeatRows=1)
+        severity_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#102a43")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#ccd6e0")),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
+            ("PADDING", (0, 0), (-1, -1), 7),
+        ]))
+        story.extend([severity_table, Paragraph("Findings and remediation", styles["SectionHeading"])])
+        finding_data = [["Severity", "Finding / location / redacted snippet", "Recommended remediation"]]
+        for finding in findings:
+            location = f"{finding.get('file_path', '')}:{finding.get('line_number') or 0}"
+            snippet = finding.get("match_content") or finding.get("raw_secret") or ""
+            details = (
+                f"<b>{escape(str(finding.get('rule_id', '')))}</b><br/>"
+                f"{escape(str(finding.get('description', '')))}<br/>"
+                f"<font color='#526579'>{escape(str(location))}</font><br/>"
+                f"<font color='#8b2430'>Redacted evidence: {escape(str(snippet))}</font>"
+            )
+            finding_data.append([
+                Paragraph(escape(str(finding.get("severity", "info")).upper()), styles["SmallCell"]),
+                Paragraph(details, styles["SmallCell"]),
+                Paragraph(escape(str(finding.get("remediation", "Review and remediate this finding."))), styles["SmallCell"]),
+            ])
+        if len(finding_data) == 1:
+            finding_data.append(["INFO", Paragraph("No findings.", styles["SmallCell"]), ""])
+        finding_table = Table(finding_data, colWidths=[22 * mm, 90 * mm, 48 * mm], repeatRows=1)
+        finding_table.setStyle(TableStyle([
+            ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#102a43")),
+            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+            ("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#ccd6e0")),
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#f1f5f9")]),
+            ("PADDING", (0, 0), (-1, -1), 6),
+        ]))
+        story.append(finding_table)
+        document.build(story)
+        payload = buffer.getvalue()
+        buffer.close()
+
+    return send_file(
+        io.BytesIO(payload),
+        mimetype=mime_type,
+        as_attachment=True,
+        download_name=filename,
+        max_age=0,
+    )
 
 
 @api_bp.route("/scans", methods=["GET"])

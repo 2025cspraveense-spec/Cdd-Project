@@ -60,6 +60,16 @@ def test_redact_text_embedded_patterns():
     assert sanitized.count("****") >= 2
 
 
+def test_redact_text_credential_assignments():
+    """Redact inline password/token assignments in code and JSON-like snippets."""
+    secret = "MySuperSecretPassword123!"
+    sanitized = redact_text(f'password="{secret}" and {{"api_key": "{secret}"}}')
+
+    assert secret not in sanitized
+    assert "password=\"MySu" in sanitized
+    assert '"api_key": "MySu' in sanitized
+
+
 def test_redact_private_key_block():
     """Verify private key block is completely redacted."""
     pem = (
