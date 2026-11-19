@@ -149,6 +149,72 @@ def test_api_metrics_endpoint(client, viewer_headers, db):
     assert data["metrics_count"] >= 1
 
 
+def test_api_report_exports_are_redacted_and_sarif_compliant(client, viewer_headers, db):
+    """All downloadable report formats include useful results without raw credentials."""
+    raw_key = "".join(["AK", "IA", "1234567890ABCDEF"])
+    db.save_scan_report({
+        "job_id": "job-report-test",
+        "project_id": "report-project",
+        "status": "COMPLETED",
+        "grade": "B",
+        "scores": {
+            "final_score": 25,
+            "severity_counts": {"critical": 1, "high": 0, "medium": 0, "low": 0, "info": 0},
+            "unique_findings": 1,
+        },
+        "findings": [{
+            "rule_id": "SEC-AWS-001",
+            "engine_name": "SecretEngine",
+            "category": "Secrets & Credentials",
+            "severity": "critical",
+            "description": "AWS Access Key ID exposed in code",
+            "file_path": "config.py",
+            "line_number": 12,
+            "raw_secret": raw_key,
+            "match_content": f"DEMO_KEY = '{raw_key}'",
+            "remediation": "Revoke and rotate the key.",
+        }],
+    })
+
+    responses = {
+        report_format: client.get(
+            f"/api/v1/scans/job-report-test/reports/{report_format}",
+            headers=viewer_headers,
+        )
+        for report_format in ("pdf", "html", "json", "sarif")
+    }
+
+    assert responses["pdf"].status_code == 200
+    assert responses["pdf"].mimetype == "application/pdf"
+    assert responses["pdf"].data.startswith(b"%PDF")
+    for report_format, response in responses.items():
+        assert response.status_code == 200
+        assert raw_key.encode() not in response.data
+
+    json_report = responses["json"].get_json()
+    assert json_report["findings"][0]["raw_secret"] == "AKIA****************"
+    sarif_report = responses["sarif"].get_json()
+    assert sarif_report["version"] == "2.1.0"
+    assert sarif_report["runs"][0]["results"][0]["ruleId"] == "SEC-AWS-001"
+    assert sarif_report["runs"][0]["results"][0]["locations"][0]["physicalLocation"]["region"]["startLine"] == 12
+
+
+def test_api_reports_require_completed_scan(client, viewer_headers, db):
+    db.save_scan_report({
+        "job_id": "job-report-pending",
+        "project_id": "report-project",
+        "status": "SCANNING",
+    })
+
+    response = client.get(
+        "/api/v1/scans/job-report-pending/reports/pdf",
+        headers=viewer_headers,
+    )
+
+    assert response.status_code == 409
+    assert response.get_json()["status"] == "error"
+
+
 def test_api_vault_rotate_secret_endpoint(client, admin_headers, analyst_headers):
     """Test Vault secret rotation endpoint: Admin allowed, Analyst forbidden."""
     payload = {"key": "API_ROTATE_KEY", "new_value": "new_secret_val_xyz"}

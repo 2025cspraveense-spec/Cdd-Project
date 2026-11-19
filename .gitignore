@@ -20,3 +20,7 @@ scanner_workspaces/
 .vscode/
 .idea/
 *.swp
+
+# Frontend dependencies and production build output
+frontend/node_modules/
+frontend/dist/
