@@ -98,6 +98,7 @@ function Login({ onLogin, onRegister, onClearError, busy, error }) {
 
   function changeMode(nextMode) {
     setMode(nextMode);
+    if (nextMode === "register") setUsername("");
     setPassword("");
     setConfirmPassword("");
     setFormError("");
