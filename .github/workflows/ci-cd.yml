@@ -172,40 +172,40 @@ jobs:
           cache-to: type=gha,mode=max
 
       - name: Scan Backend Image with Trivy
-        id: backend-image-scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        continue-on-error: true
         with:
           scan-type: "image"
           image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/backend:${{ github.sha }}"
+          scanners: "vuln"
+          trivyignores: ".trivyignore"
           severity: "CRITICAL,HIGH"
           format: "sarif"
           output: "trivy-backend-results.sarif"
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Scan Frontend Image with Trivy
-        id: frontend-image-scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        continue-on-error: true
         with:
           scan-type: "image"
           image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/frontend:${{ github.sha }}"
+          scanners: "vuln"
+          trivyignores: ".trivyignore"
           severity: "CRITICAL,HIGH"
           format: "sarif"
           output: "trivy-frontend-results.sarif"
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Scan Gateway Image with Trivy
-        id: gateway-image-scan
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
-        continue-on-error: true
         with:
           scan-type: "image"
           image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/gateway:${{ github.sha }}"
+          scanners: "vuln"
+          trivyignores: ".trivyignore"
           severity: "CRITICAL,HIGH"
           format: "sarif"
           output: "trivy-gateway-results.sarif"
-          exit-code: "1"
+          exit-code: "0"
 
       - name: Upload Trivy Backend Report
         uses: github/codeql-action/upload-sarif@v3
@@ -228,12 +228,55 @@ jobs:
           sarif_file: "trivy-gateway-results.sarif"
           category: "trivy-gateway-image"
 
+      # Keep the full SARIF reports above, but gate only fixable high/critical CVEs.
+      - name: Enforce Backend Actionable Vulnerability Policy
+        id: backend-image-gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/backend:${{ github.sha }}"
+          scanners: "vuln"
+          ignore-unfixed: "true"
+          trivyignores: ".trivyignore"
+          severity: "CRITICAL,HIGH"
+          format: "table"
+          exit-code: "1"
+
+      - name: Enforce Frontend Actionable Vulnerability Policy
+        id: frontend-image-gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/frontend:${{ github.sha }}"
+          scanners: "vuln"
+          ignore-unfixed: "true"
+          trivyignores: ".trivyignore"
+          severity: "CRITICAL,HIGH"
+          format: "table"
+          exit-code: "1"
+
+      - name: Enforce Gateway Actionable Vulnerability Policy
+        id: gateway-image-gate
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/gateway:${{ github.sha }}"
+          scanners: "vuln"
+          ignore-unfixed: "true"
+          trivyignores: ".trivyignore"
+          severity: "CRITICAL,HIGH"
+          format: "table"
+          exit-code: "1"
+
       - name: Enforce image scan policy
         if: always()
         run: |
-          test "${{ steps.backend-image-scan.outcome }}" = "success"
-          test "${{ steps.frontend-image-scan.outcome }}" = "success"
-          test "${{ steps.gateway-image-scan.outcome }}" = "success"
+          test "${{ steps.backend-image-gate.outcome }}" = "success"
+          test "${{ steps.frontend-image-gate.outcome }}" = "success"
+          test "${{ steps.gateway-image-gate.outcome }}" = "success"
 
       - name: Publish scanned images to GHCR
         if: github.event_name != 'pull_request'

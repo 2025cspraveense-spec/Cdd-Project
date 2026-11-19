@@ -34,7 +34,7 @@ LABEL maintainer="DevOps Team <devops@secretleakguard.io>" \
       description="Production hardened React 18.2 dashboard for Secret Leak Guard v2.0"
 
 # Install curl / wget for healthcheck
-RUN apk add --no-cache curl ca-certificates
+RUN apk upgrade --no-cache && apk add --no-cache curl ca-certificates
 
 # Create non-root group and user UID 10001
 RUN addgroup -g 10001 -S slggroup && \

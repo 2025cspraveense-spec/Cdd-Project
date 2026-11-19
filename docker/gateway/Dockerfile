@@ -15,7 +15,7 @@ LABEL maintainer="DevOps Team <devops@secretleakguard.io>" \
       description="Production hardened Nginx 1.27.5 reverse proxy gateway for Secret Leak Guard v2.0"
 
 # Install curl and ca-certificates for health checks
-RUN apk add --no-cache curl ca-certificates
+RUN apk upgrade --no-cache && apk add --no-cache curl ca-certificates
 
 # Create non-root group and user UID 10001
 RUN addgroup -g 10001 -S slggroup && \

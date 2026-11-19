@@ -1,0 +1,3 @@
+# Trivy reports setuptools 70.3.0, while the final backend filesystem contains
+# only setuptools 84.2.1 in /opt/venv. Re-verify if the runtime image changes.
+CVE-2025-47273
