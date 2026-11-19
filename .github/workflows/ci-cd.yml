@@ -87,7 +87,7 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy Filesystem & Dependency Vulnerability Scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           scan-type: "fs"
           scan-ref: "."
@@ -171,7 +171,7 @@ jobs:
 
       - name: Scan Backend Image with Trivy
         id: backend-image-scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         continue-on-error: true
         with:
           scan-type: "image"
@@ -183,7 +183,7 @@ jobs:
 
       - name: Scan Frontend Image with Trivy
         id: frontend-image-scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         continue-on-error: true
         with:
           scan-type: "image"
@@ -195,7 +195,7 @@ jobs:
 
       - name: Scan Gateway Image with Trivy
         id: gateway-image-scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         continue-on-error: true
         with:
           scan-type: "image"
