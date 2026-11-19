@@ -19,6 +19,18 @@ def test_vault_disabled_fallback_mode():
     assert client.get_secret("NON_EXISTENT_KEY", default="default_123") == "default_123"
 
 
+def test_enabled_vault_never_falls_back_to_environment():
+    os.environ["VAULT_REQUIRED_KEY"] = "must-not-be-used"
+    mock_hvac = MagicMock()
+    mock_hvac.is_authenticated.return_value = True
+    mock_hvac.secrets.kv.v2.read_secret_version.side_effect = Exception("read failure")
+
+    with patch("hvac.Client", return_value=mock_hvac):
+        client = VaultClient(enabled=True)
+        with pytest.raises(RuntimeError, match="Vault secret read failed"):
+            client.get_secret("VAULT_REQUIRED_KEY")
+
+
 def test_vault_set_secret_local_fallback():
     """set_secret works and caches locally in fallback mode."""
     client = VaultClient(enabled=False)
@@ -62,6 +74,29 @@ def test_vault_kv2_connected_read_write():
         assert "vault-user:vault-pass" in mongo_uri
 
 
+def test_vault_bootstrap_only_writes_missing_keys():
+    mock_hvac = MagicMock()
+    mock_hvac.is_authenticated.return_value = True
+    mock_hvac.secrets.kv.v2.read_secret_version.return_value = {
+        "data": {"data": {"JWT_SECRET_KEY": "existing-secret"}}
+    }
+
+    with patch("hvac.Client", return_value=mock_hvac):
+        client = VaultClient(enabled=True)
+        values = client.provision_secrets({
+            "JWT_SECRET_KEY": "replacement-must-not-win",
+            "MONGO_URI": "mongodb://local",
+        })
+
+    assert values["JWT_SECRET_KEY"] == "existing-secret"
+    assert values["MONGO_URI"] == "mongodb://local"
+    mock_hvac.secrets.kv.v2.create_or_update_secret.assert_called_once_with(
+        path="secret-leak-guard",
+        mount_point="secret",
+        secret={"JWT_SECRET_KEY": "existing-secret", "MONGO_URI": "mongodb://local"},
+    )
+
+
 def test_vault_dynamic_lease_renewal():
     """Test dynamic lease renewal."""
     mock_hvac = MagicMock()
@@ -75,11 +110,36 @@ def test_vault_dynamic_lease_renewal():
         assert result["lease_duration"] == 3600
 
 
+def test_vault_generates_database_credentials():
+    mock_hvac = MagicMock()
+    mock_hvac.is_authenticated.return_value = True
+    mock_hvac.secrets.database.generate_credentials.return_value = {
+        "data": {"username": "leased-user", "password": "leased-password"},
+        "lease_id": "database/creds/slg-backend-role/lease",
+        "lease_duration": 3600,
+    }
+
+    with patch("hvac.Client", return_value=mock_hvac):
+        client = VaultClient(enabled=True)
+        credentials = client.generate_database_credentials("slg-backend-role")
+
+    assert credentials == {
+        "username": "leased-user",
+        "password": "leased-password",
+        "lease_id": "database/creds/slg-backend-role/lease",
+        "lease_duration": 3600,
+    }
+    mock_hvac.secrets.database.generate_credentials.assert_called_once_with(
+        name="slg-backend-role",
+        mount_point="database",
+    )
+
+
 def test_vault_health_check_reporting():
     """Test health check reporting for both connected and degraded states."""
     client_offline = VaultClient(enabled=False)
     health_offline = client_offline.health_check()
-    assert health_offline["status"] == "fallback"
+    assert health_offline["status"] == "disabled"
     assert health_offline["connected"] is False
 
     mock_hvac = MagicMock()

@@ -3,7 +3,11 @@
 # Base Image: Nginx 1.27.5 Alpine with Non-Root Security Hardening (UID 10001)
 # =============================================================================
 
-FROM nginx:1.27.5-alpine
+FROM nginx:1.27.5-alpine AS config
+
+COPY docker/gateway/nginx.conf /etc/nginx/nginx.conf
+
+FROM nginx:1.27.5-alpine AS runtime
 
 LABEL maintainer="DevOps Team <devops@secretleakguard.io>" \
       version="2.0.0" \
@@ -17,8 +21,8 @@ RUN apk add --no-cache curl ca-certificates
 RUN addgroup -g 10001 -S slggroup && \
     adduser -u 10001 -S -D -G slggroup -h /home/slguser slguser
 
-# Copy hardened Nginx configuration
-COPY docker/gateway/nginx.conf /etc/nginx/nginx.conf
+# Copy hardened Nginx configuration from the configuration stage
+COPY --from=config /etc/nginx/nginx.conf /etc/nginx/nginx.conf
 
 # Prepare permissions for non-root execution
 RUN mkdir -p /var/cache/nginx /var/run /var/log/nginx /tmp/nginx && \

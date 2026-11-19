@@ -1,6 +1,7 @@
 """Unit tests for Weighted Risk Scoring & Grading System."""
 
 import pytest
+from app.redactor import redact_dict
 from app.scoring import (
     SEVERITY_WEIGHTS,
     assign_grade,
@@ -123,9 +124,44 @@ def test_deterministic_fingerprint_deduplication():
 
 def test_fingerprint_cross_platform_normalization():
     """Ensure Windows backslash vs UNIX forward slash normalize to the same fingerprint."""
-    f1 = {"rule_id": "R1", "file_path": "app\\config\\db.py", "line_number": 10, "raw_secret": "secret"}
-    f2 = {"rule_id": "R1", "file_path": "app/config/db.py", "line_number": 10, "raw_secret": "secret"}
+    f1 = {
+        "rule_id": "R1", "file_path": "app\\config\\db.py", "line_number": 10,
+        "category": "Secrets", "title": "Credential exposed", "raw_secret": "secret",
+    }
+    f2 = {
+        "rule_id": "R2", "file_path": "app/config/db.py", "line_number": 10,
+        "category": "Secrets", "title": "Credential exposed", "raw_secret": "different",
+    }
 
     fp1 = calculate_finding_fingerprint(f1)
     fp2 = calculate_finding_fingerprint(f2)
     assert fp1 == fp2
+
+
+def test_fingerprint_uses_category_and_title_not_evidence():
+    finding = {
+        "file_path": "src/auth.py",
+        "line_number": 17,
+        "category": "Secrets",
+        "title": "Credential exposed",
+        "raw_secret": "sensitive-value",
+        "match_content": "line with sensitive-value",
+    }
+    changed_evidence = {**finding, "raw_secret": "rotated-value", "match_content": "changed"}
+    changed_title = {**finding, "title": "Different finding"}
+
+    assert calculate_finding_fingerprint(finding) == calculate_finding_fingerprint(changed_evidence)
+    assert calculate_finding_fingerprint(finding) != calculate_finding_fingerprint(changed_title)
+
+
+def test_fingerprint_stays_stable_when_title_is_redacted():
+    finding = {
+        "file_path": "app.py",
+        "line_number": 4,
+        "category": "Code Quality & SAST",
+        "title": "Possible hardcoded password: password='super-secret-value-123'",
+    }
+    persisted_finding = redact_dict(finding)
+
+    assert persisted_finding["title"] != finding["title"]
+    assert calculate_finding_fingerprint(finding) == calculate_finding_fingerprint(persisted_finding)

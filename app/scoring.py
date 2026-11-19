@@ -4,6 +4,8 @@ import hashlib
 import os
 from typing import Any, Dict, List, Tuple
 
+from app.redactor import redact_text
+
 
 # Severity Weights defined by specification
 SEVERITY_WEIGHTS: Dict[str, int] = {
@@ -18,27 +20,16 @@ SEVERITY_WEIGHTS: Dict[str, int] = {
 def calculate_finding_fingerprint(finding: Dict[str, Any]) -> str:
     """Calculates a deterministic SHA-256 fingerprint for a finding.
     
-    Deduplication is based on:
-    - rule_id
-    - normalized file_path (forward slashes, lowercase)
-    - line_number
-    - raw_secret or match_content
+    Deduplication is based only on the canonical file path, line number,
+    category, and finding title. Evidence is intentionally excluded so that
+    secret redaction does not change a finding's identity.
     """
-    rule_id = str(finding.get("rule_id", "")).strip()
-    raw_path = str(finding.get("file_path", "")).strip()
-    # Normalize path separators for cross-platform consistency
-    normalized_path = os.path.normpath(raw_path).replace("\\", "/").lower()
+    raw_path = redact_text(str(finding.get("file_path", "")).strip())
+    normalized_path = os.path.normpath(raw_path.replace("\\", "/")).replace("\\", "/")
     line_number = str(finding.get("line_number", 0)).strip()
-    
-    # Use raw_secret or match_content or description
-    evidence = str(
-        finding.get("raw_secret")
-        or finding.get("match_content")
-        or finding.get("description")
-        or ""
-    ).strip()
-
-    fingerprint_seed = f"{rule_id}:{normalized_path}:{line_number}:{evidence}"
+    category = redact_text(str(finding.get("category", "")).strip())
+    title = redact_text(str(finding.get("title") or finding.get("description") or "").strip())
+    fingerprint_seed = "\0".join((normalized_path, line_number, category, title))
     return hashlib.sha256(fingerprint_seed.encode("utf-8")).hexdigest()
 
 
@@ -78,7 +69,7 @@ def deduplicate_findings(findings: List[Dict[str, Any]]) -> Tuple[List[Dict[str,
     duplicate_count = 0
 
     for finding in findings:
-        fp = finding.get("fingerprint") or calculate_finding_fingerprint(finding)
+        fp = calculate_finding_fingerprint(finding)
         finding_with_fp = dict(finding)
         finding_with_fp["fingerprint"] = fp
 

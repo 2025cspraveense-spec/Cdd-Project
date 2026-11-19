@@ -135,6 +135,17 @@ def test_git_url_invalid_schemes_blocked(invalid_scheme_url):
     assert "scheme" in str(exc.value).lower()
 
 
+@pytest.mark.parametrize("invalid_url", [
+    "https://user:password@github.com/org/repo.git",
+    "https://github.com:8443/org/repo.git",
+    "https://github.com:not-a-port/org/repo.git",
+    "https://github.com/org/repo.git?token=secret",
+])
+def test_git_url_rejects_embedded_credentials_and_nonstandard_target_data(invalid_url):
+    with pytest.raises(SSRFProtectionError):
+        validate_git_url_and_check_ssrf(invalid_url)
+
+
 @pytest.mark.parametrize("dangerous_ip", [
     "127.0.0.1",        # IPv4 Loopback
     "127.0.1.1",        # Sub-loopback

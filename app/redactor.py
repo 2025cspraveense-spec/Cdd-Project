@@ -30,6 +30,9 @@ DEFAULT_SENSITIVE_KEYS: Set[str] = {
     "privatekey",
     "secret_key",
     "jwt_secret_key",
+    "vault_token",
+    "client_token",
+    "lease_id",
     "authorization",
     "auth",
     "credential",
@@ -57,6 +60,14 @@ REGEX_PATTERNS: List[re.Pattern] = [
 INLINE_CREDENTIAL_ASSIGNMENT = re.compile(
     r"""(?i)(?P<prefix>\b(?:password|passwd|pwd|token|access[_-]?token|refresh[_-]?token|api[_-]?key|aws[_-]?secret[_-]?access[_-]?key|secret(?:[_-]?key)?|client[_-]?secret|credential)s?["']?\s*[:=]\s*)(?:(?P<quote>['"])(?P<quoted>(?:\\.|[^\\'"\r\n])*)(?P=quote)|(?P<bare>[^\s,'";]+))"""
 )
+
+
+def _redact_sensitive_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {key: _redact_sensitive_value(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_redact_sensitive_value(item) for item in value]
+    return redact_secret(value)
 
 
 def redact_secret(value: Any) -> str:
@@ -153,16 +164,18 @@ def redact_dict(
         data = copy.deepcopy(data)
 
     if isinstance(data, dict):
+        raw_secret = data.get("raw_secret")
+        redacted_raw_secret = redact_secret(raw_secret) if raw_secret is not None else None
         for key, value in list(data.items()):
             key_lower = str(key).lower()
             if key_lower in sensitive_keys:
-                if isinstance(value, str):
-                    data[key] = redact_secret(value)
-                elif isinstance(value, (dict, list)):
-                    data[key] = redact_dict(value, sensitive_keys, in_place=True)
-                else:
-                    data[key] = redact_secret(value)
+                data[key] = _redact_sensitive_value(value)
             elif isinstance(value, str):
+                if (
+                    raw_secret is not None
+                    and key_lower in {"match_content", "evidence", "description"}
+                ):
+                    value = value.replace(str(raw_secret), redacted_raw_secret)
                 data[key] = redact_text(value)
             elif isinstance(value, (dict, list)):
                 data[key] = redact_dict(value, sensitive_keys, in_place=True)
@@ -185,8 +198,14 @@ def redact_dict(
 def redact_finding(finding: Dict[str, Any]) -> Dict[str, Any]:
     """Specifically redacts a security finding record before persistence or serialization."""
     sanitized = copy.deepcopy(finding)
-    if "raw_secret" in sanitized and sanitized["raw_secret"] is not None:
-        sanitized["raw_secret"] = redact_secret(sanitized["raw_secret"])
+    raw_secret = sanitized.get("raw_secret")
+    if raw_secret is not None:
+        redacted_secret = redact_secret(raw_secret)
+        sanitized["raw_secret"] = redacted_secret
+        if isinstance(sanitized.get("match_content"), str):
+            sanitized["match_content"] = sanitized["match_content"].replace(
+                str(raw_secret), redacted_secret
+            )
     if "match_content" in sanitized and sanitized["match_content"] is not None:
         sanitized["match_content"] = redact_text(str(sanitized["match_content"]))
     if "evidence" in sanitized and sanitized["evidence"] is not None:

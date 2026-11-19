@@ -5,15 +5,21 @@ import time
 import pytest
 
 from app.db import DatabaseClient
+from app.engines.sast_engine import SASTEngine
 from app.scanner_orchestrator import ScanStatus, ScannerOrchestrator
 
 
 @pytest.fixture
-def orchestrator_fixture(tmp_path):
+def orchestrator_fixture(tmp_path, monkeypatch):
     db = DatabaseClient(use_mock=True, db_name="test_orch_db")
     workspaces = tmp_path / "workspaces"
     workspaces.mkdir()
     allowed_bases = [str(tmp_path)]
+    # Tool subprocesses are covered with mocked JSON output in test_engines.py.
+    # This lifecycle test focuses on orchestration and should remain portable to
+    # hosts where Windows application-control policies block scanner executables.
+    monkeypatch.setattr(SASTEngine, "_run_semgrep", lambda self, workspace: [])
+    monkeypatch.setattr(SASTEngine, "_run_bandit", lambda self, workspace: [])
 
     orchestrator = ScannerOrchestrator(
         db_client=db,

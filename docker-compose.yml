@@ -17,6 +17,8 @@ services:
       - "80:80"
       - "8080:8080"
     depends_on:
+      mongodb:
+        condition: service_healthy
       frontend:
         condition: service_healthy
       backend:
@@ -73,12 +75,20 @@ services:
         required: false
     environment:
       - FLASK_ENV=production
-      - MONGO_URI=mongodb://mongodb:27017
+      - MONGO_URI=mongodb://mongodb:27017/secret_leak_guard_v2
       - MONGO_DB_NAME=secret_leak_guard_v2
+      - MONGO_AUTH_SOURCE=secret_leak_guard_v2
+      - MONGO_INITDB_ROOT_USERNAME=
+      - MONGO_INITDB_ROOT_PASSWORD=
+      - MONGO_APP_USERNAME=
+      - MONGO_APP_PASSWORD=
       - MONGO_USE_MOCK=false
       - VAULT_ADDR=http://vault:8200
       - VAULT_ENABLED=true
-      - VAULT_TOKEN=${VAULT_TOKEN:-root}
+      - VAULT_BOOTSTRAP_ENV=true
+      - VAULT_DATABASE_ROLE=slg-backend-role
+      - VAULT_DATABASE_FALLBACK=true
+      - VAULT_TOKEN=${VAULT_TOKEN:?Set a strong VAULT_TOKEN in .env}
       - WORKSPACE_BASE_DIR=/tmp/scanner_workspaces
       - ALLOWED_LOCAL_SCAN_PATHS=/tmp/scanner_workspaces,/scan_targets
       - ENGINE_MAX_WORKERS=4
@@ -102,17 +112,25 @@ services:
   mongodb:
     image: mongo:7.0
     container_name: slg-mongodb
+    entrypoint: ["/bin/sh", "/usr/local/bin/mongodb-entrypoint.sh"]
+    command: ["mongod", "--quiet"]
     restart: unless-stopped
     expose:
       - "27017"
     environment:
       - MONGO_INITDB_DATABASE=secret_leak_guard_v2
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME:?Set MongoDB root username in .env}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD:?Set MongoDB root password in .env}
+      - MONGO_APP_USERNAME=${MONGO_APP_USERNAME:?Set MongoDB fallback username in .env}
+      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD:?Set MongoDB fallback password in .env}
     volumes:
+      - ./docker/mongodb/entrypoint.sh:/usr/local/bin/mongodb-entrypoint.sh:ro
+      - ./docker/mongodb/10-create-app-user.sh:/docker-entrypoint-initdb.d/10-create-app-user.sh:ro
       - mongodb_data:/data/db
     networks:
       - slg-network
     healthcheck:
-      test: ["CMD-SHELL", "mongosh --eval 'db.runCommand({ ping: 1 })' || exit 1"]
+      test: ["CMD-SHELL", "mongosh --quiet --username \"$${MONGO_INITDB_ROOT_USERNAME}\" --password \"$${MONGO_INITDB_ROOT_PASSWORD}\" --authenticationDatabase admin --eval 'db.adminCommand({ ping: 1 }).ok' | grep -q 1"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -124,25 +142,35 @@ services:
   vault:
     image: hashicorp/vault:1.15.6
     container_name: slg-vault
+    entrypoint: ["/bin/sh", "/usr/local/bin/vault-entrypoint.sh"]
+    command: ["server", "-dev"]
     restart: unless-stopped
     cap_add:
       - IPC_LOCK
     expose:
       - "8200"
     environment:
-      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_TOKEN:-root}
+      - VAULT_TOKEN=${VAULT_TOKEN:?Set a strong VAULT_TOKEN in .env}
+      - VAULT_DEV_ROOT_TOKEN_ID=${VAULT_TOKEN:?Set a strong VAULT_TOKEN in .env}
       - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
       - VAULT_ADDR=http://127.0.0.1:8200
+      - VAULT_DATABASE_BOOTSTRAP=true
+      - MONGO_INITDB_ROOT_USERNAME=${MONGO_INITDB_ROOT_USERNAME:?Set MongoDB root username in .env}
+      - MONGO_INITDB_ROOT_PASSWORD=${MONGO_INITDB_ROOT_PASSWORD:?Set MongoDB root password in .env}
+      - MONGO_APP_USERNAME=${MONGO_APP_USERNAME:?Set MongoDB fallback username in .env}
+      - MONGO_APP_PASSWORD=${MONGO_APP_PASSWORD:?Set MongoDB fallback password in .env}
     volumes:
+      - ./docker/vault/entrypoint.sh:/usr/local/bin/vault-entrypoint.sh:ro
+      - ./docker/vault/bootstrap.sh:/usr/local/bin/vault-bootstrap.sh:ro
       - vault_data:/vault/file
     networks:
       - slg-network
     healthcheck:
-      test: ["CMD-SHELL", "vault status || [ $$? -eq 0 ] || exit 0"]
+      test: ["CMD-SHELL", "vault status -format=json >/dev/null 2>&1 && vault read database/roles/slg-backend-role >/dev/null 2>&1"]
       interval: 10s
       timeout: 5s
       retries: 5
-      start_period: 10s
+      start_period: 30s
 
 # =============================================================================
 # Persistent Named Volumes

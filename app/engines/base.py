@@ -41,6 +41,7 @@ class BaseEngine(ABC):
             "engine_name": self.name,
             "rule_id": rule_id,
             "category": category or self.category,
+            "title": description,
             "severity": severity.lower(),
             "file_path": file_path.replace("\\", "/"),
             "line_number": int(line_number),

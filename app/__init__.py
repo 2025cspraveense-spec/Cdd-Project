@@ -18,6 +18,7 @@ from app.ingestion import (
 from app.redactor import RedactingFilter, RedactingFormatter, redact_dict
 from app.scanner_orchestrator import ScannerOrchestrator
 from app.vault_client import VaultClient
+from app.database_lease import DatabaseLeaseManager
 
 limiter = Limiter(
     key_func=get_remote_address,
@@ -62,6 +63,30 @@ def create_app(
     if config_override:
         app.config.update(config_override)
 
+    if config_name == "production":
+        required_secrets = {
+            "SECRET_KEY": app.config.get("SECRET_KEY"),
+            "JWT_SECRET_KEY": app.config.get("JWT_SECRET_KEY"),
+            "VAULT_TOKEN": app.config.get("VAULT_TOKEN"),
+        }
+        weak_values = {
+            "insecure-dev-secret-key-change-in-production",
+            "insecure-jwt-secret-key-change-in-production",
+            "change-me-to-a-very-strong-random-key-in-production",
+            "change-me-to-a-secure-jwt-signing-key-32chars",
+            "root",
+        }
+        invalid = [
+            key for key, value in required_secrets.items()
+            if not isinstance(value, str) or len(value) < 32 or value.lower() in weak_values
+        ]
+        if invalid:
+            raise RuntimeError(
+                "Production startup requires strong values for: " + ", ".join(invalid)
+            )
+        if not app.config.get("VAULT_ENABLED") or app.config.get("MONGO_USE_MOCK"):
+            raise RuntimeError("Production startup requires Vault and live MongoDB.")
+
     # 2. Setup Secure Redacting Logging
     setup_secure_logging(app)
 
@@ -74,23 +99,68 @@ def create_app(
         enabled=app.config.get("VAULT_ENABLED", False),
         timeout=app.config.get("VAULT_TIMEOUT", 5),
     )
+    if config_name == "production" and not vault.is_connected:
+        raise RuntimeError("Production startup requires an authenticated Vault connection.")
 
-    # Dynamically resolve secrets from Vault if connected
+    # Seed only missing KV-v2 keys from environment when bootstrap is explicitly enabled.
+    mongo_uri = app.config.get("MONGO_URI", "mongodb://localhost:27017")
+    database_credentials = None
+    mongo_username = None
+    mongo_password = None
+    mongo_auth_source = app.config.get(
+        "MONGO_AUTH_SOURCE", app.config.get("MONGO_DB_NAME", "admin")
+    )
     if vault.is_connected:
+        if app.config.get("VAULT_BOOTSTRAP_ENV", False):
+            vault_secrets = vault.provision_secrets({
+                key: app.config[key]
+                for key in ("SECRET_KEY", "JWT_SECRET_KEY", "MONGO_URI")
+                if app.config.get(key)
+            })
+            for key in ("SECRET_KEY", "JWT_SECRET_KEY"):
+                if vault_secrets.get(key):
+                    app.config[key] = vault_secrets[key]
         jwt_key = vault.get_secret("JWT_SECRET_KEY")
         if jwt_key:
             app.config["JWT_SECRET_KEY"] = jwt_key
-        mongo_uri = vault.get_secret("MONGO_URI")
-        if mongo_uri:
-            app.config["MONGO_URI"] = mongo_uri
+        try:
+            database_credentials = vault.generate_database_credentials(
+                role=app.config.get("VAULT_DATABASE_ROLE", "slg-backend-role"),
+                mount_point=app.config.get("VAULT_DATABASE_MOUNT_POINT", "database"),
+            )
+            mongo_username = database_credentials["username"]
+            mongo_password = database_credentials["password"]
+        except RuntimeError as error:
+            if not app.config.get("VAULT_DATABASE_FALLBACK", False):
+                raise RuntimeError(
+                    "Vault database credentials are unavailable and KV-v2 fallback is disabled."
+                ) from error
+            try:
+                mongo_username = vault.get_secret("MONGO_APP_USERNAME")
+                mongo_password = vault.get_secret("MONGO_APP_PASSWORD")
+            except (KeyError, RuntimeError) as secret_error:
+                raise RuntimeError("Vault KV-v2 MongoDB fallback credentials are missing.") from secret_error
+            if not mongo_username or not mongo_password:
+                raise RuntimeError("Vault KV-v2 MongoDB fallback credentials are incomplete.") from error
+            mongo_auth_source = "admin"
+            app.logger.warning(
+                "Dynamic MongoDB credentials unavailable; using KV-v2 fallback (%s).",
+                type(error).__name__,
+            )
 
     # 4. Initialize MongoDB 7.0 Database Client
     db = DatabaseClient(
-        mongo_uri=app.config.get("MONGO_URI", "mongodb://localhost:27017"),
+        mongo_uri=mongo_uri,
         db_name=app.config.get("MONGO_DB_NAME", "secret_leak_guard_v2"),
         ttl_seconds=app.config.get("MONGO_TTL_SECONDS", 30 * 24 * 3600),
         use_mock=app.config.get("MONGO_USE_MOCK", False),
+        allow_mock_fallback=config_name != "production",
+        mongo_username=mongo_username,
+        mongo_password=mongo_password,
+        mongo_auth_source=mongo_auth_source,
     )
+    if config_name == "production" and db.is_mock:
+        raise RuntimeError("Production startup requires a live MongoDB connection.")
 
     # 5. Initialize Scanner Orchestrator
     orchestrator = ScannerOrchestrator(
@@ -98,12 +168,24 @@ def create_app(
         max_workers=app.config.get("ENGINE_MAX_WORKERS", 4),
         workspace_base_dir=app.config.get("WORKSPACE_BASE_DIR"),
         allowed_local_paths=app.config.get("ALLOWED_LOCAL_SCAN_PATHS"),
+        osv_enabled=app.config.get("OSV_ENABLED", True),
     )
 
     # 6. Attach Singletons to Extensions Dictionary
     app.extensions["vault"] = vault
     app.extensions["db"] = db
     app.extensions["orchestrator"] = orchestrator
+    app.extensions["database_lease_manager"] = None
+    if database_credentials:
+        lease_manager = DatabaseLeaseManager(
+            vault=vault,
+            database=db,
+            auth_source=app.config.get("MONGO_AUTH_SOURCE", app.config.get("MONGO_DB_NAME", "admin")),
+            role=app.config.get("VAULT_DATABASE_ROLE", "slg-backend-role"),
+            lease=database_credentials,
+        )
+        lease_manager.start()
+        app.extensions["database_lease_manager"] = lease_manager
 
     # 7. Initialize Rate Limiter
     limiter.init_app(app)

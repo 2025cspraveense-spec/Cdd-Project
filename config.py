@@ -33,11 +33,16 @@ class Config:
 
     # HashiCorp Vault 1.15.6 Settings
     VAULT_ADDR: str = os.getenv("VAULT_ADDR", "http://127.0.0.1:8200")
-    VAULT_TOKEN: str = os.getenv("VAULT_TOKEN", "root")
+    VAULT_TOKEN: str = os.getenv("VAULT_TOKEN", "")
     VAULT_MOUNT_POINT: str = os.getenv("VAULT_MOUNT_POINT", "secret")
     VAULT_SECRET_PATH: str = os.getenv("VAULT_SECRET_PATH", "secret-leak-guard")
-    VAULT_ENABLED: bool = os.getenv("VAULT_ENABLED", "false").lower() in ("true", "1", "yes")
+    VAULT_ENABLED: bool = os.getenv("VAULT_ENABLED", "true").lower() in ("true", "1", "yes")
+    VAULT_BOOTSTRAP_ENV: bool = os.getenv("VAULT_BOOTSTRAP_ENV", "false").lower() in ("true", "1", "yes")
     VAULT_TIMEOUT: int = int(os.getenv("VAULT_TIMEOUT", "5"))
+    VAULT_DATABASE_ROLE: str = os.getenv("VAULT_DATABASE_ROLE", "slg-backend-role")
+    VAULT_DATABASE_MOUNT_POINT: str = os.getenv("VAULT_DATABASE_MOUNT_POINT", "database")
+    VAULT_DATABASE_FALLBACK: bool = os.getenv("VAULT_DATABASE_FALLBACK", "false").lower() in ("true", "1", "yes")
+    MONGO_AUTH_SOURCE: str = os.getenv("MONGO_AUTH_SOURCE", "admin")
 
     # Workspace & Ingestion settings
     # Default to system temp dir or /tmp/scanner_workspaces
@@ -63,6 +68,7 @@ class Config:
     # Engine Execution & Concurrency
     ENGINE_MAX_WORKERS: int = int(os.getenv("ENGINE_MAX_WORKERS", "4"))
     SCAN_JOB_TIMEOUT_SECONDS: int = int(os.getenv("SCAN_JOB_TIMEOUT_SECONDS", "300"))
+    OSV_ENABLED: bool = os.getenv("OSV_ENABLED", "true").lower() in ("true", "1", "yes")
 
 
 class DevelopmentConfig(Config):
@@ -77,6 +83,7 @@ class TestingConfig(Config):
     MONGO_DB_NAME = "secret_leak_guard_test"
     MONGO_USE_MOCK = True
     VAULT_ENABLED = False
+    OSV_ENABLED = False
     JWT_EXPIRATION_HOURS = 1
     WORKSPACE_BASE_DIR = os.path.join(tempfile.gettempdir(), "scanner_workspaces_test")
     RATELIMIT_STORAGE_URI = "memory://"

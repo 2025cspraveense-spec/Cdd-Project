@@ -78,19 +78,19 @@ function Login({ onLogin, busy, error }) {
   }
 
   return (
-    <main className="login-shell">
-      <section className="login-card glass-panel">
-        <div className="brand-mark">◈</div>
+    <main className="login-shell grid min-h-screen place-items-center p-5">
+      <section className="login-card glass-panel w-full max-w-[420px] rounded-2xl">
+        <div className="brand-mark text-slg-cyan">◈</div>
         <p className="eyebrow">SECURITY OPERATIONS</p>
         <h1>Secret Leak Guard</h1>
         <p className="muted">Sign in to review scans, risk posture, and remediation reports.</p>
-        {error && <div className="notice error-notice" role="alert">{error}</div>}
-        <form className="login-form" onSubmit={submit}>
+        {error && <div className="notice error-notice mb-4 flex items-center justify-between gap-4 rounded-lg border p-3 text-sm" role="alert">{error}</div>}
+        <form className="login-form grid gap-2" onSubmit={submit}>
           <label htmlFor="username">Username</label>
-          <input id="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
+          <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
           <label htmlFor="password">Password</label>
-          <input id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-          <button className="button primary-button" type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in securely"}</button>
+          <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
+          <button className="button primary-button mt-3 min-h-10 rounded-md focus-visible:ring-2 focus-visible:ring-cyan-300" type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in securely"}</button>
         </form>
         <p className="login-footnote">Credentials are sent only to the configured Flask API.</p>
       </section>
@@ -349,9 +349,9 @@ export default function App() {
   const latestJobProgress = Number(selectedJob?.progress?.percentage || (selectedJob?.status === "COMPLETED" ? 100 : 0));
 
   return (
-    <div className="app-shell">
-      <header className="topbar">
-        <a className="brand" href="/" aria-label="Secret Leak Guard home">
+    <div className="app-shell min-h-screen">
+      <header className="topbar sticky top-0 z-10 flex items-center justify-between">
+        <a className="brand flex items-center gap-3 text-inherit no-underline" href="/" aria-label="Secret Leak Guard home">
           <span className="brand-mark">◈</span>
           <span><strong>Secret Leak Guard</strong><small>Application Security Center</small></span>
         </a>
@@ -361,27 +361,27 @@ export default function App() {
             API {health?.status === "healthy" ? "CONNECTED" : "UNAVAILABLE"}
           </div>
           <div className="user-chip"><span className="avatar">{(user?.username || "U").slice(0, 1).toUpperCase()}</span><span>{user?.username || "Signed in"}</span></div>
-          <button className="button quiet-button" type="button" onClick={handleLogout}>Sign out</button>
+          <button className="button quiet-button rounded-md border px-3 py-2 transition-colors hover:border-cyan-300" type="button" onClick={handleLogout}>Sign out</button>
         </div>
       </header>
 
-      <main className="workspace">
-        <div className="page-heading">
+      <main className="workspace mx-auto w-full max-w-screen-2xl px-4 py-8 md:px-8">
+        <div className="page-heading flex flex-wrap items-end justify-between gap-6">
           <div><p className="eyebrow">OVERVIEW / SECURITY POSTURE</p><h1>Unified security dashboard</h1><p className="muted">Scan, prioritize, and remediate risk across your codebase.</p></div>
           <div className="system-summary"><span><i className="status-dot" /> Flask API</span><span><i className="status-dot" /> {health?.database?.status || "Database"}</span><span><i className="status-dot" /> Vault {health?.vault?.status || "status"}</span></div>
         </div>
 
-        {apiError && <div className="notice error-notice" role="alert"><span>{apiError}</span><button type="button" aria-label="Dismiss error" onClick={() => setApiError("")}>×</button></div>}
+        {apiError && <div className="notice error-notice mb-4 flex items-center justify-between gap-4 rounded-lg border p-3 text-sm" role="alert"><span>{apiError}</span><button type="button" aria-label="Dismiss error" onClick={() => setApiError("")}>×</button></div>}
 
-        <section className="stats-grid" aria-label="Security summary">
-          <article className="stat-card glass-panel"><span className="stat-icon cyan">⌁</span><div><span className="stat-label">Total findings</span><strong>{totalFindings}</strong><small>{selectedJob ? "Selected scan" : "No completed scan selected"}</small></div></article>
-          <article className="stat-card glass-panel"><span className="stat-icon red">!</span><div><span className="stat-label">Critical</span><strong>{counts.critical || 0}</strong><small>Immediate attention</small></div></article>
-          <article className="stat-card glass-panel"><span className="stat-icon orange">↗</span><div><span className="stat-label">High severity</span><strong>{counts.high || 0}</strong><small>Prioritize remediation</small></div></article>
-          <article className="stat-card glass-panel score-stat"><div className="score-orb" style={{ "--score": `${score * 3.6}deg` }}><span>{score}</span></div><div><span className="stat-label">Risk score</span><strong className="grade-value">{scanResults?.grade || "—"}</strong><small>0–100 · lower is better</small></div></article>
+        <section className="stats-grid grid grid-cols-2 gap-3 xl:grid-cols-4" aria-label="Security summary">
+          <article className="stat-card glass-panel flex min-h-28 items-center gap-4 rounded-xl p-4"><span className="stat-icon cyan">⌁</span><div><span className="stat-label">Total findings</span><strong>{totalFindings}</strong><small>{selectedJob ? "Selected scan" : "No completed scan selected"}</small></div></article>
+          <article className="stat-card glass-panel flex min-h-28 items-center gap-4 rounded-xl p-4"><span className="stat-icon red">!</span><div><span className="stat-label">Critical</span><strong>{counts.critical || 0}</strong><small>Immediate attention</small></div></article>
+          <article className="stat-card glass-panel flex min-h-28 items-center gap-4 rounded-xl p-4"><span className="stat-icon orange">↗</span><div><span className="stat-label">High severity</span><strong>{counts.high || 0}</strong><small>Prioritize remediation</small></div></article>
+          <article className="stat-card glass-panel score-stat flex min-h-28 items-center gap-3 rounded-xl p-4"><div className="score-orb" style={{ "--score": `${score * 3.6}deg` }}><span>{score}</span></div><div><span className="stat-label">Risk score</span><strong className="grade-value">{scanResults?.grade || "—"}</strong><small>0–100 · lower is better</small></div></article>
         </section>
 
-        <section className="main-grid">
-          <article className="panel glass-panel scan-panel">
+        <section className="main-grid grid grid-cols-1 gap-4 xl:grid-cols-[minmax(330px,0.92fr)_minmax(0,1.58fr)]">
+          <article className="panel glass-panel scan-panel min-w-0 rounded-xl p-5">
             <div className="section-title"><div><p className="eyebrow">NEW ASSESSMENT</p><h2>Ingest a project</h2></div><span className="engine-count">4 engines enabled</span></div>
             <p className="muted panel-intro">Choose a source. Each scan runs secrets, SAST, dependency, and container checks.</p>
             <div className="mode-tabs" role="tablist" aria-label="Project ingestion method">
@@ -389,15 +389,15 @@ export default function App() {
             </div>
             <form className="scan-form" onSubmit={handleStartScan}>
               <label htmlFor="project-id">Project identifier</label>
-              <input id="project-id" value={projectId} maxLength={120} required onChange={(event) => setProjectId(event.target.value)} placeholder="e.g. payments-api" />
+              <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="project-id" value={projectId} maxLength={120} required onChange={(event) => setProjectId(event.target.value)} placeholder="e.g. payments-api" />
               {mode === "archive" && <div className="upload-area">
                 <input id="archive-file" className="visually-hidden" type="file" accept=".zip,.tar,.tar.gz,.tgz" onChange={(event) => setArchive(event.target.files?.[0] || null)} />
                 <label htmlFor="archive-file" className="upload-label"><span className="upload-icon">↑</span><strong>{archive?.name || "Choose a project archive"}</strong><small>ZIP, TAR.GZ or TGZ · subject to server upload limit</small></label>
                 <p>Archives are extracted in an isolated workspace with path traversal protection.</p>
               </div>}
-              {mode === "local" && <div className="field-block"><label htmlFor="local-path">Local filesystem directory</label><input id="local-path" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="/scan_targets/my-project" required /><small>Must be within a server-configured scan directory.</small></div>}
-              {mode === "git" && <div className="field-block"><label htmlFor="git-url">Git repository HTTPS URL</label><input id="git-url" type="url" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="https://github.com/org/repository.git" required /><small>Private, loopback, and metadata network addresses are blocked.</small></div>}
-              {mode === "dockerfile" && <div className="field-block"><label htmlFor="dockerfile">Dockerfile contents</label><textarea id="dockerfile" rows={7} value={target} onChange={(event) => setTarget(event.target.value)} placeholder={"FROM python:3.12-slim\nUSER app\nCMD [\"python\", \"app.py\"]"} required /></div>}
+              {mode === "local" && <div className="field-block"><label htmlFor="local-path">Local filesystem directory</label><input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="local-path" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="/scan_targets/my-project" required /><small>Must be within a server-configured scan directory.</small></div>}
+              {mode === "git" && <div className="field-block"><label htmlFor="git-url">Git repository HTTPS URL</label><input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="git-url" type="url" value={target} onChange={(event) => setTarget(event.target.value)} placeholder="https://github.com/org/repository.git" required /><small>Private, loopback, and metadata network addresses are blocked.</small></div>}
+              {mode === "dockerfile" && <div className="field-block"><label htmlFor="dockerfile">Dockerfile contents</label><textarea className="w-full resize-y rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 font-mono text-xs leading-6 text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="dockerfile" rows={7} value={target} onChange={(event) => setTarget(event.target.value)} placeholder={"FROM python:3.12-slim\nUSER app\nCMD [\"python\", \"app.py\"]"} required /></div>}
               <div className="engine-list">{["Secrets", "SAST", "SCA", "Container"].map((engine) => <span key={engine}><i className="check-mark">✓</i>{engine}</span>)}</div>
               <button className="button primary-button launch-button" type="submit" disabled={submitting}>{submitting ? <><span className="spinner" /> Submitting scan…</> : "Start security scan"}<span aria-hidden="true">→</span></button>
             </form>
@@ -436,7 +436,7 @@ export default function App() {
           </div>
         </section>
 
-        <section className="panel glass-panel results-panel">
+        <section className="panel glass-panel results-panel min-w-0 overflow-hidden rounded-xl p-5">
           <div className="results-heading">
             <div><p className="eyebrow">ASSESSMENT DETAILS</p><h2>Findings & remediation</h2><p className="muted">{scanResults ? `${scanResults.project_id} · ${scanResults.scores?.unique_findings ?? findings.length} unique findings` : "Select a completed scan to review security findings."}</p></div>
             <div className="report-actions">
@@ -446,6 +446,9 @@ export default function App() {
           {selectedJob && ACTIVE_STATUSES.has(selectedJob.status) && <div className="scan-progress"><div className="progress-heading"><strong>Scan in progress</strong><span>{latestJobProgress}%</span></div><div className="progress-track large"><span style={{ width: `${latestJobProgress}%` }} /></div><p>{safeText(selectedJob.progress?.message || "Working through analysis engines…")}</p></div>}
           {selectedJob?.status === "FAILED" && <div className="notice error-notice">{safeText(selectedJob.error_message || "This scan failed. Check the target and try again.")}</div>}
           {scanResults && <>
+            {Object.keys(scanResults.engine_errors || {}).length > 0 && <div className="notice error-notice" role="status">
+              Partial scan: these engines did not complete: {Object.keys(scanResults.engine_errors).join(", ")}.
+            </div>}
             <div className="severity-summary">
               {SEVERITIES.map((severity) => <div className="severity-metric" key={severity}><span className={`severity-dot ${severity}`} /><span>{severity}</span><strong>{counts[severity] || 0}</strong><div className="severity-track"><span className={severity} style={{ width: `${totalFindings ? ((counts[severity] || 0) / totalFindings) * 100 : 0}%` }} /></div></div>)}
             </div>

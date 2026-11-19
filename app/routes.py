@@ -300,6 +300,7 @@ def get_scan_results(job_id: str):
         "grade": report.get("grade"),
         "scores": report.get("scores"),
         "findings": report.get("findings", []),
+        "engine_errors": report.get("engine_errors", {}),
         "created_at": report.get("created_at"),
         "updated_at": report.get("updated_at"),
     }
@@ -577,3 +578,33 @@ def rotate_vault_secret():
         "message": f"Secret '{key}' rotation executed.",
         "result": result,
     })), 200
+
+
+@api_bp.route("/vault/renew-lease", methods=["POST"])
+@require_role([Role.ADMIN])
+def renew_vault_lease():
+    payload = request.get_json(silent=True) or {}
+    lease_id = payload.get("lease_id")
+    increment = payload.get("increment", 3600)
+    if not isinstance(lease_id, str) or not lease_id.strip():
+        return jsonify({"status": "error", "error": "A valid 'lease_id' is required."}), 400
+    if not isinstance(increment, int) or isinstance(increment, bool) or not 1 <= increment <= 86400:
+        return jsonify({"status": "error", "error": "'increment' must be an integer from 1 to 86400."}), 400
+    result = current_app.extensions["vault"].renew_lease(lease_id.strip(), increment=increment)
+    if not result.get("renewed"):
+        return jsonify(redact_dict({"status": "error", "result": result})), 503
+    return jsonify(redact_dict({"status": "success", "result": result})), 200
+
+
+@api_bp.route("/vault/renew-token", methods=["POST"])
+@require_role([Role.ADMIN])
+def renew_vault_token():
+    payload = request.get_json(silent=True) or {}
+    increment = payload.get("increment", 3600)
+    if not isinstance(increment, int) or isinstance(increment, bool) or not 1 <= increment <= 86400:
+        return jsonify({"status": "error", "error": "'increment' must be an integer from 1 to 86400."}), 400
+    vault = current_app.extensions["vault"]
+    if not vault.enabled or not vault.is_connected:
+        return jsonify({"status": "error", "error": "Authenticated Vault is required for token renewal."}), 503
+    result = vault.renew_token(increment=increment)
+    return jsonify(redact_dict({"status": "success", "result": result})), 200

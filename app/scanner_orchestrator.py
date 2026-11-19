@@ -30,7 +30,7 @@ from app.ingestion import (
     ingest_dockerfile,
     validate_local_path,
 )
-from app.redactor import redact_dict, redact_findings
+from app.redactor import redact_dict, redact_findings, redact_text
 from app.scoring import calculate_risk_score
 
 logger = logging.getLogger(__name__)
@@ -56,6 +56,7 @@ class ScannerOrchestrator:
         workspace_base_dir: Optional[str] = None,
         allowed_local_paths: Optional[List[str]] = None,
         custom_engines: Optional[Dict[str, BaseEngine]] = None,
+        osv_enabled: bool = False,
     ):
         self.db = db_client
         self.max_workers = max_workers
@@ -66,7 +67,7 @@ class ScannerOrchestrator:
         self.engines: Dict[str, BaseEngine] = custom_engines or {
             "SecretEngine": SecretEngine(),
             "SASTEngine": SASTEngine(),
-            "SCAEngine": SCAEngine(),
+            "SCAEngine": SCAEngine(enabled=osv_enabled),
             "ContainerEngine": ContainerEngine(),
         }
 
@@ -217,6 +218,7 @@ class ScannerOrchestrator:
                 engines_to_run = self.engines
 
             raw_findings = []
+            engine_errors = {}
             futures = {
                 self.engine_executor.submit(engine.scan, workspace_path): name
                 for name, engine in engines_to_run.items()
@@ -229,7 +231,9 @@ class ScannerOrchestrator:
                     raw_findings.extend(engine_results)
                     logger.info(f"Engine {eng_name} completed for job {job_id} with {len(engine_results)} findings.")
                 except Exception as e:
-                    logger.error(f"Engine {eng_name} encountered an error: {e}", exc_info=True)
+                    safe_error = type(e).__name__
+                    engine_errors[eng_name] = safe_error
+                    logger.error("Engine %s failed with %s.", eng_name, safe_error)
 
             # 3. State: SCORING (Deduplication, Scoring & Grading)
             self._update_job_status(
@@ -259,6 +263,7 @@ class ScannerOrchestrator:
                 },
                 "grade": score_report["grade"],
                 "findings": redacted_findings,
+                "engine_errors": engine_errors,
                 "error_message": None,
                 "progress": {
                     "step": ScanStatus.COMPLETED,
@@ -289,13 +294,14 @@ class ScannerOrchestrator:
             )
 
         except Exception as e:
-            logger.error(f"Scan job {job_id} failed: {e}", exc_info=True)
+            safe_error = redact_text(str(e))
+            logger.error("Scan job %s failed with %s.", job_id, type(e).__name__)
             self._update_job_status(
                 job_id=job_id,
                 status=ScanStatus.FAILED,
                 percentage=100,
                 message="Scan job failed.",
-                error_message=str(e),
+                error_message=safe_error,
             )
 
         finally:

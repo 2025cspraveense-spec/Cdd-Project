@@ -63,8 +63,14 @@ verify_prerequisites() {
 # -----------------------------------------------------------------------------
 verify_images() {
     echo -e "\n${BOLD}[2/7] Inspecting Secret Leak Guard Container Images...${NC}"
-    docker images --filter "reference=*slg*" --format "table {{.Repository}}\t{{.Tag}}\t{{.Size}}\t{{.ID}}" || true
-    echo -e "  ${GREEN}✓ Multi-stage optimized images verified.${NC}"
+    images=$(docker compose images -q 2>/dev/null | sort -u)
+    if [ -n "$images" ]; then
+        docker compose images
+        check_result "Compose service images are present" 0
+    else
+        echo -e "  ${RED}No Compose service images are available.${NC}"
+        check_result "Compose service images are present" 1
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -77,12 +83,16 @@ verify_containers() {
     services=("slg-gateway" "slg-frontend" "slg-backend" "slg-mongodb" "slg-vault")
     for svc in "${services[@]}"; do
         if docker ps --format '{{.Names}}' | grep -q "^${svc}$"; then
-            status=$(docker inspect --format='{{.State.Health.Status}}' "$svc" 2>/dev/null || echo "running")
-            echo -e "  Container ${CYAN}${svc}${NC}: Status = ${GREEN}${status}${NC}"
-            check_result "Container $svc health" 0
+            status=$(docker inspect --format='{{if .State.Health}}{{.State.Health.Status}}{{else}}missing-healthcheck{{end}}' "$svc" 2>/dev/null || echo "inspect-failed")
+            echo -e "  Container ${CYAN}${svc}${NC}: Status = ${status}"
+            if [ "$status" = "healthy" ]; then
+                check_result "Container $svc health" 0
+            else
+                check_result "Container $svc health" 1
+            fi
         else
             echo -e "  Container ${CYAN}${svc}${NC}: ${YELLOW}Not currently running in this shell${NC}"
-            check_result "Container $svc presence check" 0
+            check_result "Container $svc presence check" 1
         fi
     done
 }
@@ -97,9 +107,17 @@ verify_network() {
         driver=$(docker network inspect slg-network --format '{{.Driver}}' 2>/dev/null || echo "bridge")
         echo -e "  Network: ${CYAN}slg-network${NC} | Driver: ${driver} | Subnet: ${subnet}"
         check_result "Custom bridge network 'slg-network' active" 0
+        for svc in "slg-gateway" "slg-frontend" "slg-backend" "slg-mongodb" "slg-vault"; do
+            attached=$(docker inspect --format='{{range $name, $network := .NetworkSettings.Networks}}{{$name}} {{end}}' "$svc" 2>/dev/null || echo "")
+            if echo "$attached" | grep -qw "slg-network"; then
+                check_result "Container $svc attached to slg-network" 0
+            else
+                check_result "Container $svc attached to slg-network" 1
+            fi
+        done
     else
         echo -e "  ${YELLOW}Notice: slg-network will be created upon 'docker compose up'${NC}"
-        check_result "Network definition verified" 0
+        check_result "Custom bridge network 'slg-network' active" 1
     fi
 }
 
@@ -116,7 +134,7 @@ verify_volumes() {
             check_result "Persistent volume $vol" 0
         else
             echo -e "  Volume ${CYAN}${vol}${NC}: Ready in docker-compose.yml"
-            check_result "Volume definition $vol verified" 0
+            check_result "Persistent volume $vol exists" 1
         fi
     done
 }
@@ -136,24 +154,33 @@ verify_gateway_routing_and_headers() {
         echo -e "      Response: ${GREEN}${resp}${NC}"
         check_result "Gateway /health endpoint on Port 80" 0
     else
-        echo -e "      ${YELLOW}Gateway not currently live on localhost:80 (offline check mode)${NC}"
+        echo -e "      ${RED}Gateway health endpoint is unavailable.${NC}"
+        check_result "Gateway /health endpoint on Port 80" 1
     fi
 
     echo -e "\n  [B] Probing Dual Port Binding (Port 8080)..."
     if curl -s -f "${ALT_URL}/health" >/dev/null 2>&1; then
         check_result "Gateway listening on Port 8080" 0
     else
-        echo -e "      ${YELLOW}Port 8080 dual listener verified in nginx.conf${NC}"
-        check_result "Dual port 80/8080 configuration" 0
+        echo -e "      ${RED}Gateway is unavailable on port 8080.${NC}"
+        check_result "Gateway listening on Port 8080" 1
     fi
+
+    for port in 80 8080; do
+        for route in "/" "/app/" "/api/v1/health" "/vault/"; do
+            status=$(curl -sS --max-time 15 -o /dev/null -w '%{http_code}' "http://localhost:${port}${route}" 2>/dev/null || true)
+            if [ "$status" -ge 200 ] 2>/dev/null && [ "$status" -lt 400 ] 2>/dev/null; then
+                check_result "Route ${route} on port ${port} (HTTP ${status})" 0
+            else
+                echo -e "      ${RED}Route ${route} on port ${port} returned HTTP ${status}.${NC}"
+                check_result "Route ${route} on port ${port}" 1
+            fi
+        done
+    done
 
     echo -e "\n  [C] Testing Strict HTTP Security Headers via curl -I..."
     # Headers check against simulated or live gateway response
-    headers=$(curl -s -I "${BASE_URL}/health" 2>/dev/null || echo "Content-Security-Policy: default-src 'self'
-X-Frame-Options: SAMEORIGIN
-X-Content-Type-Options: nosniff
-Referrer-Policy: strict-origin-when-cross-origin
-X-XSS-Protection: 1; mode=block")
+    headers=$(curl -s -I "${BASE_URL}/health" 2>/dev/null || true)
 
     echo "$headers" | grep -i "Content-Security-Policy" && check_result "Header: Content-Security-Policy" 0 || check_result "Header: Content-Security-Policy" 1
     echo "$headers" | grep -i "X-Frame-Options" && check_result "Header: X-Frame-Options" 0 || check_result "Header: X-Frame-Options" 1
@@ -168,15 +195,27 @@ X-XSS-Protection: 1; mode=block")
 verify_json_error_responses() {
     echo -e "\n${BOLD}[7/7] Validating Custom JSON Error Handling (413 & 502)...${NC}"
 
-    echo -e "  [A] Verifying HTTP 413 (Payload Too Large) JSON format:"
-    json_413_expected='{"status":"error","code":413,"error":"PayloadTooLarge","message":"Uploaded archive exceeds the maximum permitted limit of 1000MB."}'
-    echo -e "      ${CYAN}${json_413_expected}${NC}"
-    check_result "HTTP 413 JSON specification format" 0
+    echo -e "  [A] Exercising the live HTTP 413 handler:"
+    response_file=$(mktemp)
+    status=$(curl -sS --max-time 10 -X POST \
+        -H 'Content-Length: 1048576001' \
+        -o "$response_file" -w '%{http_code}' \
+        http://localhost:80/api/v1/scans 2>/dev/null || true)
+    if [ "$status" = "413" ] && grep -q '"code":413' "$response_file"; then
+        check_result "Live HTTP 413 JSON response" 0
+    else
+        echo -e "      ${RED}Expected HTTP 413 JSON, received status ${status}.${NC}"
+        check_result "Live HTTP 413 JSON response" 1
+    fi
+    rm -f "$response_file"
 
-    echo -e "  [B] Verifying HTTP 502 (Bad Gateway) JSON format:"
-    json_502_expected='{"status":"error","code":502,"error":"BadGateway","message":"Upstream service temporarily unavailable. Gateway failed to connect to target service."}'
-    echo -e "      ${CYAN}${json_502_expected}${NC}"
-    check_result "HTTP 502 JSON specification format" 0
+    echo -e "  [B] Checking the configured JSON 502 handler (requires upstream outage to exercise live):"
+    if grep -Fq 'error_page 502 = @json_502;' docker/gateway/nginx.conf \
+        && grep -Fq '"code":502' docker/gateway/nginx.conf; then
+        check_result "HTTP 502 JSON handler configuration" 0
+    else
+        check_result "HTTP 502 JSON handler configuration" 1
+    fi
 }
 
 # -----------------------------------------------------------------------------
@@ -184,7 +223,7 @@ verify_json_error_responses() {
 # -----------------------------------------------------------------------------
 print_summary() {
     echo -e "\n${BLUE}${BOLD}======================================================================${NC}"
-    echo -e "${GREEN}${BOLD}   ✓ PROJECT EXPO INFRASTRUCTURE VERIFICATION COMPLETED              ${NC}"
+    echo -e "${GREEN}${BOLD}   PROJECT EXPO INFRASTRUCTURE VERIFICATION SUMMARY                 ${NC}"
     echo -e "${BLUE}${BOLD}======================================================================${NC}"
     echo -e "  Passed Checks : ${GREEN}${PASSED_COUNT} / ${TOTAL_CHECKS}${NC}"
     echo -e "  Gateway       : Nginx 1.27.5 on ports 80 & 8080 (1000MB upload limit)"
@@ -206,4 +245,7 @@ verify_volumes
 verify_gateway_routing_and_headers
 verify_json_error_responses
 print_summary
+if [ "$PASSED_COUNT" -ne "$TOTAL_CHECKS" ]; then
+    exit 1
+fi
 exit 0

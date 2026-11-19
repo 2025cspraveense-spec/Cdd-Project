@@ -1,4 +1,7 @@
 const esbuild = require("esbuild");
+const postcss = require("postcss");
+const tailwindcss = require("tailwindcss");
+const autoprefixer = require("autoprefixer");
 const fs = require("fs");
 const path = require("path");
 
@@ -32,13 +35,12 @@ async function build() {
     },
   });
 
-  // Bundle CSS
-  if (fs.existsSync(path.join(__dirname, "src", "App.css"))) {
-    fs.copyFileSync(
-      path.join(__dirname, "src", "App.css"),
-      path.join(distDir, "bundle.css")
-    );
-  }
+  const cssPath = path.join(__dirname, "src", "App.css");
+  const css = await postcss([tailwindcss(), autoprefixer()]).process(
+    fs.readFileSync(cssPath, "utf8"),
+    { from: cssPath, to: path.join(distDir, "bundle.css") }
+  );
+  fs.writeFileSync(path.join(distDir, "bundle.css"), css.css);
 
   console.log("Frontend production build completed successfully into dist/");
 }

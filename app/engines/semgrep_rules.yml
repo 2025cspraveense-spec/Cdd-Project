@@ -1,0 +1,56 @@
+rules:
+  - id: slg.python.subprocess-shell-true
+    languages: [python]
+    severity: ERROR
+    message: Avoid subprocess calls with shell=True.
+    metadata:
+      category: security
+      remediation: Pass arguments as a list and leave shell disabled.
+    patterns:
+      - pattern: subprocess.$FUNC(..., shell=True, ...)
+      - metavariable-regex:
+          metavariable: $FUNC
+          regex: ^(run|call|Popen|check_call|check_output)$
+  - id: slg.python.os-system
+    languages: [python]
+    severity: ERROR
+    message: os.system executes a command through a shell.
+    metadata:
+      category: security
+      remediation: Use subprocess with an argument list and shell disabled.
+    pattern: os.system(...)
+  - id: slg.python.dynamic-eval
+    languages: [python]
+    severity: WARNING
+    message: Dynamic evaluation can execute attacker-controlled input.
+    metadata:
+      category: security
+      remediation: Avoid eval and exec on dynamic input.
+    pattern-either:
+      - pattern: eval(...)
+      - pattern: exec(...)
+  - id: slg.python.sql-interpolation
+    languages: [python]
+    severity: ERROR
+    message: SQL query appears to use string interpolation.
+    metadata:
+      category: security
+      remediation: Use parameterized SQL query arguments.
+    patterns:
+      - pattern-either:
+          - pattern: $CURSOR.execute(f"...")
+          - pattern: $CURSOR.execute("..." % ...)
+          - pattern: $CURSOR.execute("...".format(...))
+      - metavariable-regex:
+          metavariable: $CURSOR
+          regex: .*
+  - id: slg.python.yaml-unsafe-load
+    languages: [python]
+    severity: ERROR
+    message: yaml.load without a safe loader can construct unsafe objects.
+    metadata:
+      category: security
+      remediation: Use yaml.safe_load or explicitly specify SafeLoader.
+    patterns:
+      - pattern: yaml.load($DATA)
+      - pattern-not: yaml.load($DATA, ..., Loader=yaml.SafeLoader, ...)

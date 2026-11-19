@@ -67,6 +67,7 @@ WORKDIR /app
 # Copy application code, configuration, and runner
 COPY --chown=10001:10001 app/ /app/app/
 COPY --chown=10001:10001 config.py run.py ./
+COPY --chown=10001:10001 scripts/create_admin.py /app/scripts/create_admin.py
 
 # Create workspaces and log directories with restricted non-root permissions
 RUN mkdir -p /tmp/scanner_workspaces /app/logs && \

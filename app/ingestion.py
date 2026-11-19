@@ -232,6 +232,14 @@ def validate_git_url_and_check_ssrf(url: str, allowed_schemes: tuple = ("https",
     hostname = parsed.hostname
     if not hostname:
         raise SSRFProtectionError("Git URL must specify a valid hostname.")
+    if parsed.username or parsed.password:
+        raise SSRFProtectionError("Git URLs containing embedded credentials are not permitted.")
+    try:
+        port = parsed.port
+    except ValueError as error:
+        raise SSRFProtectionError("Git URL contains an invalid port.") from error
+    if port not in (None, 443) or parsed.query or parsed.fragment:
+        raise SSRFProtectionError("Git URLs must use the default HTTPS port and omit query/fragment data.")
 
     # Check for known dangerous cloud metadata hostnames directly
     dangerous_hosts = {"metadata.google.internal", "169.254.169.254", "instance-data", "localhost"}

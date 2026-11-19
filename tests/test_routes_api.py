@@ -229,3 +229,22 @@ def test_api_vault_rotate_secret_endpoint(client, admin_headers, analyst_headers
     data = resp_admin.get_json()
     assert data["status"] == "success"
     assert data["result"]["rotated"] is True
+
+
+def test_api_vault_lease_renewal_is_admin_only_and_reports_disabled_vault(
+    client, admin_headers, analyst_headers
+):
+    payload = {"lease_id": "database/creds/demo/lease-id", "increment": 3600}
+
+    assert client.post(
+        "/api/v1/vault/renew-lease", json=payload, headers=analyst_headers
+    ).status_code == 403
+    assert client.post(
+        "/api/v1/vault/renew-lease", json={"lease_id": "lease-id", "increment": True},
+        headers=admin_headers,
+    ).status_code == 400
+    response = client.post(
+        "/api/v1/vault/renew-lease", json=payload, headers=admin_headers
+    )
+    assert response.status_code == 503
+    assert response.get_json()["status"] == "error"

@@ -167,11 +167,14 @@ def validate_register_payload(data: Any) -> Dict[str, str]:
     if not re.match(r"^[a-zA-Z0-9_\-\.]+$", username):
         raise ValueError("Username can only contain alphanumeric characters, dots, underscores, or dashes.")
 
-    if not password or len(password) < 8:
-        raise ValueError("Password must be at least 8 characters long.")
+    if not password or len(password) < 8 or len(password) > 72:
+        raise ValueError("Password must be between 8 and 72 characters long.")
 
-    if role not in Role.ALL:
-        raise ValueError(f"Invalid role '{role}'. Permitted roles are: {list(Role.ALL)}.")
+    if role not in {Role.ANALYST, Role.VIEWER}:
+        raise ValueError(
+            "Public registration supports analyst and viewer roles only. "
+            "Admin accounts must be provisioned by an administrator."
+        )
 
     return {
         "username": username,

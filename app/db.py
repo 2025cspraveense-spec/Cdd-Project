@@ -25,11 +25,19 @@ class DatabaseClient:
         db_name: str = "secret_leak_guard_v2",
         ttl_seconds: int = 30 * 24 * 3600,
         use_mock: bool = False,
+        allow_mock_fallback: bool = True,
+        mongo_username: Optional[str] = None,
+        mongo_password: Optional[str] = None,
+        mongo_auth_source: str = "admin",
     ):
         self.mongo_uri = mongo_uri
         self.db_name = db_name
         self.ttl_seconds = ttl_seconds
         self.use_mock = use_mock
+        self.allow_mock_fallback = allow_mock_fallback
+        self.mongo_username = mongo_username
+        self.mongo_password = mongo_password
+        self.mongo_auth_source = mongo_auth_source
         self.client: Optional[pymongo.MongoClient] = None
         self.db = None
         self.is_mock = False
@@ -46,6 +54,7 @@ class DatabaseClient:
             # Connect to MongoDB with timeout
             self.client = pymongo.MongoClient(
                 self.mongo_uri,
+                **self._auth_options(),
                 serverSelectionTimeoutMS=2000,
                 connectTimeoutMS=2000,
             )
@@ -53,14 +62,64 @@ class DatabaseClient:
             self.client.admin.command("ping")
             self.db = self.client[self.db_name]
             self.is_mock = False
-            logger.info(f"Connected to live MongoDB at {self.mongo_uri} (db: {self.db_name})")
+            logger.info("Connected to live MongoDB (db: %s)", self.db_name)
             self.ensure_indexes()
         except (ConnectionFailure, PyMongoError, Exception) as e:
             logger.warning(
-                f"Failed to connect to live MongoDB at {self.mongo_uri} ({e}). "
-                "Switching to in-memory mongomock database."
+                "Could not connect to live MongoDB (%s); mock fallback enabled=%s.",
+                type(e).__name__,
+                self.allow_mock_fallback,
             )
+            if not self.allow_mock_fallback:
+                raise RuntimeError("MongoDB is unavailable and mock fallback is disabled.") from None
             self._init_mock()
+
+    def _auth_options(self) -> Dict[str, str]:
+        if self.mongo_username is None or self.mongo_password is None:
+            return {}
+        return {
+            "username": self.mongo_username,
+            "password": self.mongo_password,
+            "authSource": self.mongo_auth_source,
+        }
+
+    def rotate_credentials(
+        self,
+        username: str,
+        password: str,
+        auth_source: Optional[str] = None,
+    ) -> None:
+        """Verify and atomically switch the live MongoDB client to new credentials."""
+        if self.use_mock or self.is_mock:
+            raise RuntimeError("MongoDB credentials cannot be rotated for a mock database.")
+        if not username or not password:
+            raise ValueError("MongoDB username and password are required.")
+
+        new_client = pymongo.MongoClient(
+            self.mongo_uri,
+            username=username,
+            password=password,
+            authSource=auth_source or self.mongo_auth_source,
+            serverSelectionTimeoutMS=2000,
+            connectTimeoutMS=2000,
+        )
+        try:
+            new_client.admin.command("ping")
+        except Exception:
+            new_client.close()
+            raise
+
+        old_client = self.client
+        self.client = new_client
+        self.db = new_client[self.db_name]
+        self.mongo_username = username
+        self.mongo_password = password
+        if auth_source:
+            self.mongo_auth_source = auth_source
+        self.is_mock = False
+        self.ensure_indexes()
+        if old_client:
+            old_client.close()
 
     def _init_mock(self) -> None:
         """Initializes in-memory mongomock client."""

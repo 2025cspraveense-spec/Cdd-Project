@@ -1,11 +1,11 @@
-# Secret Leak Guard v2.0 - Complete Enterprise Platform
+# Secret Leak Guard v2.0 - Static Analysis Demo Platform
 
-**Secret Leak Guard v2.0** is an enterprise-grade, asynchronous static analysis, secret detection, and automated remediation platform. It features a complete multi-tier microservices architecture:
+**Secret Leak Guard v2.0** is an asynchronous static-analysis demo platform with a multi-tier architecture:
 - **Unified Gateway**: Nginx 1.27.5 reverse proxy with custom JSON error pages and HTTP security headers
 - **Frontend Dashboard**: React 18.2 interactive security operations console
 - **Scanner Backend**: Python 3.12 / Flask 3.1 API orchestrating 4 parallel analysis engines
 - **Persistence Layer**: MongoDB 7.0 with compound and TTL expiration indexing
-- **Secrets Management**: HashiCorp Vault 1.15.6 with KV-v2 engine and lease renewal
+- **Secrets Management**: HashiCorp Vault 1.15.6 KV-v2 integration (Compose uses dev mode)
 - **CI/CD & DevSecOps**: GitHub Actions, Gitleaks, Trivy, GHCR publishing, and automated rollback
 
 ---
@@ -33,7 +33,7 @@
     +------------------------------------+  | Scanner Backend (Python 3.12/    |  +---------------------------+
     | Frontend Dashboard (React 18.2)    |  | Flask 3.1 / Gunicorn - UID 10001)|  | HashiCorp Vault 1.15.6    |
     | - Non-root Nginx server (:3000)    |  +----------------------------------+  | - KV-v2 Secret Engine     |
-    | - Live Jobs & Findings Monitor     |                   |                    | - Dynamic Lease & Renewal |
+    | - Live Jobs & Findings Monitor     |                   |                        | - KV-v2 Static Secrets    |
     | - Posture Grading & Gauge (A+ to F)|                   v                    | - Cap IPC_LOCK (:8200)    |
     +------------------------------------+  +----------------------------------+  +---------------------------+
                                             | 4 Parallel Analysis Engines      |               |
@@ -91,19 +91,20 @@
 │   ├── redactor.py               # Strict redaction (preserves first 4 chars: AKIA****************)
 │   ├── routes.py                 # Auth, scans, metrics, and redacted PDF/HTML/JSON/SARIF exports
 │   ├── scanner_orchestrator.py   # ThreadPoolExecutor concurrency, state machine, lifecycle
-│   ├── scoring.py                # Weighted risk scoring, SHA-256 fingerprinting, grading
-│   ├── vault_client.py           # HashiCorp Vault hvac KV-v2 integration with fallback
+│   ├── scoring.py                # Weighted scoring, redacted-field SHA-256 fingerprints, grading
+│   ├── vault_client.py           # HashiCorp Vault KV-v2 bootstrap, rotation, and leases
 │   └── engines/                  # Modular static analysis engine interfaces
 │       ├── __init__.py
 │       ├── base.py               # BaseEngine abstract class and finding models
-│       ├── secret_engine.py      # Secret scanner (AWS, GitHub, Slack, Private Keys)
-│       ├── sast_engine.py        # SAST scanner (Command Injection, SQLi, Deserialization)
-│       ├── sca_engine.py         # SCA dependency scanner (requirements.txt, package.json)
+│       ├── secret_engine.py      # Provider regexes and Base64/hex entropy detection
+│       ├── sast_engine.py        # Python AST and source-pattern security checks
+│       ├── sca_engine.py         # OSV.dev queries with SEMVER/ECOSYSTEM range evaluation
 │       └── container_engine.py   # Container & Dockerfile security analyzer
 ├── scan_targets/                 # Read-only host mount for local scan targets
 ├── scripts/
-│   └── verify_stack.sh           # Project Expo live stack verification and healthcheck script
-└── tests/                        # 85-Test Comprehensive Automated Pytest Suite
+│   ├── verify_stack.sh           # Live stack health verification script
+│   └── create_admin.py           # Interactive administrator provisioning
+└── tests/                        # Pytest unit and API integration suite
     ├── conftest.py
     ├── test_auth_rbac.py
     ├── test_db.py
@@ -112,7 +113,8 @@
     ├── test_redactor.py
     ├── test_routes_api.py
     ├── test_scoring.py
-    └── test_vault_client.py
+    ├── test_vault_client.py
+    └── test_engines.py
 ```
 
 ---
@@ -198,13 +200,13 @@ Located at `.github/workflows/ci-cd.yml`, the pipeline runs on every `push` and 
 |          Scans entire git history and codebase to block leaked credentials.       |
 |                                                                                   |
 |  [Job 2] Automated Build & Pytest Suite                                           |
-|          Runs Python 3.12 test suite (85 unit/integration tests) + Node build.    |
+|          Runs Python 3.12 unit/integration tests + locked Node build.             |
 |                                                                                   |
 |  [Job 3] Trivy Security & Vulnerability Audit                                     |
 |          Scans filesystem and dependencies for CRITICAL/HIGH CVEs + SARIF upload. |
 |                                                                                   |
-|  [Job 4] Multi-Stage Docker Build, Tag & Publish                                  |
-|          Builds backend, frontend, gateway; tags with Git SHA and pushes to GHCR. |
+|  [Job 4] Multi-Stage Docker Build, Scan, Tag & Publish                           |
+|          Scans all three images before pushing tagged images to GHCR.             |
 |                                                                                   |
 |  [Job 5] Automated Deployment, Health Verification & Rollback                     |
 |          Deploys via docker compose, verifies all endpoints, auto-rolls back      |
@@ -230,21 +232,22 @@ chmod +x scripts/verify_stack.sh
 4. **Network Topology**: Inspection of `slg-network` subnet and container IP bindings.
 5. **Persistent Storage**: Verification of `slg_mongodb_data`, `slg_vault_data`, `slg_workspace_data`.
 6. **Gateway Routing**: Verification of port 80 and 8080 listeners, reverse proxy pass, and security headers.
-7. **JSON Error Validation**: Conformance testing for HTTP 413 and 502 JSON error payloads.
+7. **JSON Error Validation**: Exercises live HTTP 413; verifies 502 configuration (a live 502 requires an upstream outage).
 
 ---
 
-## 7. Starting the Production Stack
+## 7. Starting the Local Demo Stack
 
 ```bash
-# 1. Setup environment configuration
+# 1. Set strong, distinct, base64url-compatible values (at least 32 characters)
+#    for SECRET_KEY, JWT_SECRET_KEY, and VAULT_TOKEN in .env.
 cp .env.example .env
 
 # 2. Build and launch all 5 microservices
-docker-compose up -d --build
+docker compose up -d --build
 
 # 3. View container health status
-docker-compose ps
+docker compose ps
 
 # 4. Access Platform Interfaces:
 # - Frontend Control Dashboard: http://localhost/
@@ -269,9 +272,39 @@ formats are `pdf` (vector executive report), `html`, `json`, and `sarif`
 (OASIS SARIF 2.1.0). Report downloads are unavailable until a scan completes.
 Credentials are redacted before report generation and API responses.
 
-For a live demonstration, provision an analyst account, start the stack, then
-select **Local path** in the dashboard and scan
+For a live demonstration, start the stack and then create an administrator
+interactively inside the backend container:
+
+```bash
+docker compose exec -it backend python /app/scripts/create_admin.py
+```
+
+Then sign in and select **Local path** in the dashboard and scan
 `/scan_targets/demo_vulnerable_project`. This deliberately vulnerable sample
 contains nonfunctional placeholder values and examples for the secrets, SAST,
 SCA, and container engines. Download its PDF from the report controls. Never
 deploy the sample application.
+
+## 9. Security Readiness Limitations
+
+This Compose configuration is for a local Expo/demo environment, not production
+deployment. Vault runs in dev mode with a root token; MongoDB requires root
+authentication, and the backend uses Vault-issued, least-privilege database
+credentials with automatic lease renewal and rotation. An authenticated KV-v2
+root credential is used only when dynamic credential generation fails in this
+demo configuration. MongoDB's entrypoint redacts username/password fields from
+structured logs so successful-authentication events do not expose dynamic
+database usernames. Rate limiting uses in-memory storage. Environment fallback
+is available only when Vault is explicitly disabled. The Compose Vault
+entrypoint redacts the dev root-token startup line from container logs; this is
+log hygiene, not a production Vault configuration.
+Compose seeds only missing KV-v2 keys from `.env` on startup. Do not expose the
+demo gateway to untrusted networks or use production secrets with it. Production
+startup fails closed when signing/Vault credentials are weak or Vault/live
+MongoDB are unavailable.
+
+The scanner uses Python AST checks, Semgrep, Bandit, OSV SEMVER/ECOSYSTEM
+range evaluation, and provider/entropy-based secret checks. Container rules
+cover the requested CIS-aligned Dockerfile hardening checks; they are static
+heuristics, not a complete CIS Docker Benchmark audit. The React dashboard uses
+Tailwind CSS utilities with custom glassmorphic visual styling.

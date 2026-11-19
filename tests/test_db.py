@@ -105,3 +105,18 @@ def test_historical_metrics_persistence(mock_db):
     assert len(metrics) == 1
     assert metrics[0]["final_score"] == 50
     assert metrics[0]["grade"] == "C"
+
+
+def test_dynamic_mongodb_credentials_are_passed_as_auth_options():
+    client = DatabaseClient(
+        use_mock=True,
+        mongo_username="leased-user",
+        mongo_password="leased-password",
+        mongo_auth_source="secret_leak_guard_v2",
+    )
+
+    assert client._auth_options() == {
+        "username": "leased-user",
+        "password": "leased-password",
+        "authSource": "secret_leak_guard_v2",
+    }

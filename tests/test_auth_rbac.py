@@ -1,6 +1,7 @@
 """Integration & Unit tests for Authentication & RBAC."""
 
 import pytest
+from app import create_app
 from app.auth import (
     Role,
     decode_jwt_token,
@@ -58,9 +59,46 @@ def test_api_register_duplicate_username_fails(client):
     response = client.post("/api/v1/auth/register", json={
         "username": "admin_user",  # seeded in conftest
         "password": "Password123!",
-        "role": "admin",
+        "role": "analyst",
     })
     assert response.status_code == 409
+
+
+def test_public_registration_cannot_create_admin(client, db):
+    response = client.post("/api/v1/auth/register", json={
+        "username": "self_promoted",
+        "password": "Password123!",
+        "role": Role.ADMIN,
+    })
+
+    assert response.status_code == 400
+    assert db.get_user_by_username("self_promoted") is None
+
+
+def test_production_rejects_weak_signing_and_vault_secrets():
+    with pytest.raises(RuntimeError, match="strong values"):
+        create_app(
+            config_name="production",
+            config_override={
+                "SECRET_KEY": "weak",
+                "JWT_SECRET_KEY": "weak",
+                "VAULT_TOKEN": "root",
+            },
+        )
+
+
+def test_production_requires_live_vault_and_mongodb_configuration():
+    with pytest.raises(RuntimeError, match="requires Vault and live MongoDB"):
+        create_app(
+            config_name="production",
+            config_override={
+                "SECRET_KEY": "S" * 40,
+                "JWT_SECRET_KEY": "J" * 40,
+                "VAULT_TOKEN": "V" * 40,
+                "VAULT_ENABLED": False,
+                "MONGO_USE_MOCK": True,
+            },
+        )
 
 
 def test_api_login_success(client):

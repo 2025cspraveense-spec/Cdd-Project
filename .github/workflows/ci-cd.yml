@@ -17,7 +17,6 @@ concurrency:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_PREFIX: ${{ github.repository }}
 
 jobs:
   # ===========================================================================
@@ -59,7 +58,7 @@ jobs:
           python -m pip install --upgrade pip setuptools wheel
           pip install -r requirements.txt
 
-      - name: Run Pytest Comprehensive Test Suite (85 Test Cases)
+      - name: Run Pytest Unit and Integration Suite
         run: |
           python -m pytest -v --tb=short
 
@@ -68,12 +67,12 @@ jobs:
         with:
           node-version: 20
           cache: "npm"
-          cache-dependency-path: frontend/package.json
+          cache-dependency-path: frontend/package-lock.json
 
       - name: Install Frontend Dependencies & Compile Assets
         run: |
           cd frontend
-          npm install --no-audit --no-fund
+          npm ci --no-audit --no-fund
           npm run build
 
   # ===========================================================================
@@ -88,18 +87,18 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Run Trivy Filesystem & Dependency Vulnerability Scan
-        uses: aquasecurity/trivy-action@master
+        uses: aquasecurity/trivy-action@0.28.0
         with:
           scan-type: "fs"
           scan-ref: "."
           severity: "CRITICAL,HIGH"
           format: "sarif"
           output: "trivy-fs-results.sarif"
-          exit-code: "0"
+          exit-code: "1"
 
       - name: Upload Trivy SARIF Security Report to GitHub
         uses: github/codeql-action/upload-sarif@v3
-        if: always()
+        if: always() && github.event_name != 'pull_request'
         with:
           sarif_file: "trivy-fs-results.sarif"
           category: "trivy-filesystem"
@@ -115,54 +114,134 @@ jobs:
       - name: Checkout Codebase
         uses: actions/checkout@v4
 
+      - name: Normalize container registry image path
+        id: image-name
+        run: echo "value=${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to GitHub Container Registry (GHCR)
+        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
           registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Build & Push Scanner Backend Image
-      - name: Build and Push Backend Container Image
+      # Build the images locally; publish only after image scans pass.
+      - name: Build Backend Container Image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/backend/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
+          load: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/backend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/backend:latest
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/backend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Build & Push Frontend Image
-      - name: Build and Push Frontend Container Image
+      - name: Build Frontend Container Image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/frontend/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
+          load: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/frontend:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/frontend:latest
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/frontend:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      # Build & Push Unified Gateway Image
-      - name: Build and Push Unified Gateway Container Image
+      - name: Build Gateway Container Image
         uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/gateway/Dockerfile
-          push: ${{ github.event_name != 'pull_request' }}
+          push: false
+          load: true
           tags: |
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/gateway:latest
-            ${{ env.REGISTRY }}/${{ env.IMAGE_PREFIX }}/gateway:${{ github.sha }}
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/gateway:latest
+            ${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/gateway:${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      - name: Scan Backend Image with Trivy
+        id: backend-image-scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/backend:${{ github.sha }}"
+          severity: "CRITICAL,HIGH"
+          format: "sarif"
+          output: "trivy-backend-results.sarif"
+          exit-code: "1"
+
+      - name: Scan Frontend Image with Trivy
+        id: frontend-image-scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/frontend:${{ github.sha }}"
+          severity: "CRITICAL,HIGH"
+          format: "sarif"
+          output: "trivy-frontend-results.sarif"
+          exit-code: "1"
+
+      - name: Scan Gateway Image with Trivy
+        id: gateway-image-scan
+        uses: aquasecurity/trivy-action@0.28.0
+        continue-on-error: true
+        with:
+          scan-type: "image"
+          image-ref: "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/gateway:${{ github.sha }}"
+          severity: "CRITICAL,HIGH"
+          format: "sarif"
+          output: "trivy-gateway-results.sarif"
+          exit-code: "1"
+
+      - name: Upload Trivy Backend Report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && github.event_name != 'pull_request'
+        with:
+          sarif_file: "trivy-backend-results.sarif"
+          category: "trivy-backend-image"
+
+      - name: Upload Trivy Frontend Report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && github.event_name != 'pull_request'
+        with:
+          sarif_file: "trivy-frontend-results.sarif"
+          category: "trivy-frontend-image"
+
+      - name: Upload Trivy Gateway Report
+        uses: github/codeql-action/upload-sarif@v3
+        if: always() && github.event_name != 'pull_request'
+        with:
+          sarif_file: "trivy-gateway-results.sarif"
+          category: "trivy-gateway-image"
+
+      - name: Enforce image scan policy
+        if: always()
+        run: |
+          test "${{ steps.backend-image-scan.outcome }}" = "success"
+          test "${{ steps.frontend-image-scan.outcome }}" = "success"
+          test "${{ steps.gateway-image-scan.outcome }}" = "success"
+
+      - name: Publish scanned images to GHCR
+        if: github.event_name != 'pull_request'
+        run: |
+          docker push "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/backend:latest"
+          docker push "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/backend:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/frontend:latest"
+          docker push "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/frontend:${{ github.sha }}"
+          docker push "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/gateway:latest"
+          docker push "${{ env.REGISTRY }}/${{ steps.image-name.outputs.value }}/gateway:${{ github.sha }}"
 
   # ===========================================================================
   # Job 5: Automated Deployment, Health Verification & Rollback
@@ -177,10 +256,20 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Prepare Staging Environment Variables
+        env:
+          SECRET_KEY: ${{ secrets.SECRET_KEY }}
+          JWT_SECRET_KEY: ${{ secrets.JWT_SECRET_KEY }}
+          VAULT_TOKEN: ${{ secrets.VAULT_TOKEN }}
         run: |
-          cp .env.example .env
-          sed -i 's/change-me-to-a-very-strong-random-key-in-production/${{ secrets.SECRET_KEY || "prod-random-secret-key-32chars" }}/g' .env
-          sed -i 's/change-me-to-a-secure-jwt-signing-key-32chars/${{ secrets.JWT_SECRET_KEY || "prod-jwt-secret-key-32chars" }}/g' .env
+          for name in SECRET_KEY JWT_SECRET_KEY VAULT_TOKEN; do
+            value="${!name}"
+            if [[ ! "$value" =~ ^[A-Za-z0-9_-]{32,}$ ]]; then
+              echo "Required deployment secret $name is missing or does not meet the minimum format."
+              exit 1
+            fi
+          done
+          printf "SECRET_KEY='%s'\nJWT_SECRET_KEY='%s'\nVAULT_TOKEN='%s'\nMAX_CONTENT_LENGTH=1048576000\n" \
+            "$SECRET_KEY" "$JWT_SECRET_KEY" "$VAULT_TOKEN" > .env
 
       - name: Deploy 5-Service Stack via Docker Compose
         run: |
@@ -212,8 +301,11 @@ jobs:
       - name: Automated Rollback on Deployment Failure
         if: failure()
         run: |
-          echo "⚠️ Deployment verification failed! Initiating automated rollback..."
-          docker compose logs --tail=100
+          echo "Deployment verification failed. Stopping the temporary stack."
           docker compose down
-          echo "Stack safely rolled back."
+          rm -f .env
           exit 1
+
+      - name: Remove temporary credentials file
+        if: always()
+        run: rm -f .env

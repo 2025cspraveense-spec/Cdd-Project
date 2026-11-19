@@ -11,11 +11,11 @@ FROM node:20-alpine AS builder
 
 WORKDIR /app
 
-# Copy dependency manifests
-COPY frontend/package.json ./
+# Copy locked dependency manifests
+COPY frontend/package.json frontend/package-lock.json ./
 
-# Install build dependencies
-RUN npm install --no-audit --no-fund
+# Install the exact locked dependency set
+RUN npm ci --no-audit --no-fund
 
 # Copy frontend source code & assets
 COPY frontend/ ./
