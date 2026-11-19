@@ -54,6 +54,16 @@ def test_api_register_user_success(client):
     assert data["user"]["role"] == "analyst"
 
 
+def test_api_register_defaults_to_analyst(client):
+    response = client.post("/api/v1/auth/register", json={
+        "username": "dashboard_analyst",
+        "password": "Password123!",
+    })
+
+    assert response.status_code == 201
+    assert response.get_json()["user"]["role"] == Role.ANALYST
+
+
 def test_api_register_duplicate_username_fails(client):
     """Registering an existing username returns 409 Conflict."""
     response = client.post("/api/v1/auth/register", json={

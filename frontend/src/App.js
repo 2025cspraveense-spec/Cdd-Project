@@ -68,13 +68,41 @@ function severityCounts(findings) {
   }, {});
 }
 
-function Login({ onLogin, busy, error }) {
+function Login({ onLogin, onRegister, onClearError, busy, error }) {
+  const [mode, setMode] = useState("login");
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
+  const [formError, setFormError] = useState("");
+  const [success, setSuccess] = useState("");
 
   function submit(event) {
     event.preventDefault();
+    setFormError("");
+    setSuccess("");
+    if (mode === "register") {
+      if (password !== confirmPassword) {
+        setFormError("Passwords do not match.");
+        return;
+      }
+      onRegister(username, password, () => {
+        setMode("login");
+        setPassword("");
+        setConfirmPassword("");
+        setSuccess("Account created. Sign in with your new credentials.");
+      });
+      return;
+    }
     onLogin(username, password, () => setPassword(""));
+  }
+
+  function changeMode(nextMode) {
+    setMode(nextMode);
+    setPassword("");
+    setConfirmPassword("");
+    setFormError("");
+    setSuccess("");
+    onClearError();
   }
 
   return (
@@ -83,15 +111,28 @@ function Login({ onLogin, busy, error }) {
         <div className="brand-mark text-slg-cyan">◈</div>
         <p className="eyebrow">SECURITY OPERATIONS</p>
         <h1>Secret Leak Guard</h1>
-        <p className="muted">Sign in to review scans, risk posture, and remediation reports.</p>
+        <p className="muted">{mode === "login" ? "Sign in to review scans, risk posture, and remediation reports." : "Create an analyst account to start reviewing security scans."}</p>
         {error && <div className="notice error-notice mb-4 flex items-center justify-between gap-4 rounded-lg border p-3 text-sm" role="alert">{error}</div>}
+        {formError && <div className="notice error-notice mb-4 flex items-center justify-between gap-4 rounded-lg border p-3 text-sm" role="alert">{formError}</div>}
+        {success && <div className="mb-4 rounded-lg border border-emerald-400/20 bg-emerald-400/5 p-3 text-sm text-emerald-200" role="status">{success}</div>}
         <form className="login-form grid gap-2" onSubmit={submit}>
           <label htmlFor="username">Username</label>
           <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="username" autoComplete="username" value={username} onChange={(event) => setUsername(event.target.value)} required />
-          <label htmlFor="password">Password</label>
-          <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="password" type="password" autoComplete="current-password" value={password} onChange={(event) => setPassword(event.target.value)} required />
-          <button className="button primary-button mt-3 min-h-10 rounded-md focus-visible:ring-2 focus-visible:ring-cyan-300" type="submit" disabled={busy}>{busy ? "Signing in…" : "Sign in securely"}</button>
+          <label htmlFor="password">{mode === "login" ? "Password" : "Create password"}</label>
+          <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="password" type="password" autoComplete={mode === "login" ? "current-password" : "new-password"} minLength={mode === "register" ? 8 : undefined} maxLength={72} value={password} onChange={(event) => setPassword(event.target.value)} required />
+          {mode === "register" && <>
+            <label htmlFor="confirm-password">Confirm password</label>
+            <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="confirm-password" type="password" autoComplete="new-password" minLength={8} maxLength={72} value={confirmPassword} onChange={(event) => setConfirmPassword(event.target.value)} required />
+            <p className="text-xs text-slate-400">New accounts receive the analyst role. Admin accounts must be provisioned separately.</p>
+          </>}
+          <button className="button primary-button mt-3 min-h-10 rounded-md focus-visible:ring-2 focus-visible:ring-cyan-300" type="submit" disabled={busy}>{busy ? (mode === "login" ? "Signing in…" : "Creating account…") : (mode === "login" ? "Sign in securely" : "Create account")}</button>
         </form>
+        <p className="mt-4 text-center text-sm text-slate-400">
+          {mode === "login" ? "Don't have an account?" : "Already have an account?"}{" "}
+          <button className="font-semibold text-cyan-300 hover:text-cyan-200" type="button" onClick={() => changeMode(mode === "login" ? "register" : "login")}>
+            {mode === "login" ? "Create account" : "Sign in"}
+          </button>
+        </p>
         <p className="login-footnote">Credentials are sent only to the configured Flask API.</p>
       </section>
     </main>
@@ -267,6 +308,19 @@ export default function App() {
     }
   }
 
+  async function handleRegister(username, password, onSuccess) {
+    setLoginBusy(true);
+    setLoginError("");
+    try {
+      await apiRequest("/auth/register", "", { method: "POST", body: { username, password } });
+      onSuccess();
+    } catch (error) {
+      setLoginError(error.message);
+    } finally {
+      setLoginBusy(false);
+    }
+  }
+
   async function handleLogout() {
     setToken("");
     setUser(null);
@@ -342,7 +396,7 @@ export default function App() {
     }
   }
 
-  if (!token) return <Login onLogin={handleLogin} busy={loginBusy} error={loginError} />;
+  if (!token) return <Login onLogin={handleLogin} onRegister={handleRegister} onClearError={() => setLoginError("")} busy={loginBusy} error={loginError} />;
 
   const score = Math.max(0, Math.min(100, Number(scanResults?.scores?.final_score || 0)));
   const historyPoints = [...history].reverse();
