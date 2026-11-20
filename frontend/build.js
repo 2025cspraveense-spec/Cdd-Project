@@ -2,6 +2,7 @@ const esbuild = require("esbuild");
 const postcss = require("postcss");
 const tailwindcss = require("tailwindcss");
 const autoprefixer = require("autoprefixer");
+const crypto = require("crypto");
 const fs = require("fs");
 const path = require("path");
 
@@ -41,6 +42,23 @@ async function build() {
     { from: cssPath, to: path.join(distDir, "bundle.css") }
   );
   fs.writeFileSync(path.join(distDir, "bundle.css"), css.css);
+
+  const hashedAssets = {};
+  for (const [extension, filename] of [["js", "bundle.js"], ["css", "bundle.css"]]) {
+    const sourcePath = path.join(distDir, filename);
+    const contents = fs.readFileSync(sourcePath);
+    const hash = crypto.createHash("sha256").update(contents).digest("hex").slice(0, 12);
+    const hashedFilename = `bundle.${hash}.${extension}`;
+    fs.writeFileSync(path.join(distDir, hashedFilename), contents);
+    fs.unlinkSync(sourcePath);
+    hashedAssets[extension] = hashedFilename;
+  }
+
+  const indexPath = path.join(distDir, "index.html");
+  const html = fs.readFileSync(indexPath, "utf8")
+    .replace('href="/bundle.css"', `href="/${hashedAssets.css}"`)
+    .replace('src="/bundle.js"', `src="/${hashedAssets.js}"`);
+  fs.writeFileSync(indexPath, html);
 
   console.log("Frontend production build completed successfully into dist/");
 }

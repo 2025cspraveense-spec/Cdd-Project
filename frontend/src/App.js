@@ -163,6 +163,7 @@ export default function App() {
   const [aiEntries, setAiEntries] = useState([]);
   const [aiQuestion, setAiQuestion] = useState("");
   const [aiOpen, setAiOpen] = useState(false);
+  const [aiNotice, setAiNotice] = useState("");
 
   const selectedJob = jobs.find((job) => job.job_id === selectedJobId);
   const findings = scanResults?.findings || [];
@@ -431,11 +432,13 @@ export default function App() {
 
   async function requestAI(task, extra = {}) {
     if (!aiConsent) {
-      setApiError("Confirm the AI data-sharing consent before sending this request.");
+      setAiOpen(true);
+      setAiNotice("To use Explain or Suggest fix, agree to the data-sharing consent below, close this panel, then click the finding action again.");
       return null;
     }
     if (!selectedJobId) return null;
     setAiBusy(task);
+    setAiNotice("");
     setApiError("");
     try {
       const response = await apiRequest(`/ai/${task}`, token, {
@@ -447,9 +450,12 @@ export default function App() {
         data.entry,
         ...current.filter((entry) => entry.cache_key !== data.entry.cache_key),
       ]);
+      setAiOpen(true);
       return data.entry;
     } catch (error) {
       setApiError(error.message);
+      setAiNotice(error.message);
+      setAiOpen(true);
       return null;
     } finally {
       setAiBusy("");
@@ -609,8 +615,12 @@ export default function App() {
           <div className="section-title"><div><p className="eyebrow">OPTIONAL ASSISTANCE</p><h2 id="ai-assistant-title">Security AI chat</h2></div><button className="button quiet-button" type="button" onClick={() => setAiOpen(false)} aria-label="Close AI chat">×</button></div>
           <p className="muted">AI suggestions are unverified and are never applied automatically. Only redacted scan metadata and your question are sent; source files and evidence are not sent.</p>
           {!scanResults && <p className="ai-chat-empty" role="status">Select a completed scan to start a conversation.</p>}
+          {aiNotice && <p className="notice error-notice mb-3 rounded-lg border p-3 text-sm" role="status">{aiNotice}</p>}
           <label className="my-3 flex items-start gap-2 text-sm text-slate-300">
-            <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
+            <input type="checkbox" checked={aiConsent} onChange={(event) => {
+              setAiConsent(event.target.checked);
+              if (event.target.checked) setAiNotice("");
+            }} />
             I agree to send redacted scan metadata and my question to the configured AI provider for this request.
           </label>
           <div className="flex flex-wrap gap-2">

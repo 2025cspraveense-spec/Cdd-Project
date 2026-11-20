@@ -131,3 +131,40 @@ def test_ai_sends_only_redacted_metadata_and_persists_cached_history():
     assert len(database.list_ai_history("user-1", "scan-2")) == 1
     assert database.list_ai_history("user-2", "scan-1") == []
     database.close()
+
+
+def test_ai_context_bounds_large_scans_and_omits_other_findings_for_actions():
+    assistant = AIAssistant(
+        database=None,
+        api_key="test-key",
+        model="test-model",
+        generator=lambda prompt: "answer",
+    )
+    findings = [
+        {
+            "rule_id": f"rule-{index}-" + ("x" * 1000),
+            "engine_name": "SASTEngine",
+            "category": "Security",
+            "severity": "high",
+            "description": "d" * 1000,
+            "match_content": "source evidence must not be sent",
+        }
+        for index in range(308)
+    ]
+    report = {
+        "status": "COMPLETED",
+        "scores": {"final_score": 100, "severity_counts": {"high": 308}},
+        "findings": findings,
+    }
+
+    explain_context = assistant._context("explain", report, findings[0], None)
+    summary_context = assistant._context("summary", report, None, None)
+
+    assert explain_context["scan"]["finding_count"] == 308
+    assert "findings" not in explain_context["scan"]
+    assert len(explain_context["finding"]["description"]) == 400
+    assert len(summary_context["scan"]["findings"]) == assistant.MAX_CHAT_FINDINGS
+    assert summary_context["scan"]["additional_findings"] == 296
+    assert len(summary_context["scan"]["findings"][0]["rule_id"]) == 120
+    assert "match_content" not in str(summary_context)
+    assert len(str(summary_context)) < 10000
