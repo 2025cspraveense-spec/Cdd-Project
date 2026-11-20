@@ -169,6 +169,8 @@ def test_rbac_viewer_can_view_status_and_results(client, viewer_headers, db):
     db.save_scan_report({
         "job_id": job_id,
         "project_id": "proj-1",
+        "submitted_by_id": "user_viewer_01",
+        "submitted_by": "viewer_user",
         "status": "COMPLETED",
         "findings": [],
         "scores": {"final_score": 0},

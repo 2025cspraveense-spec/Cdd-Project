@@ -21,12 +21,14 @@ def test_ensure_indexes_creation(mock_db):
     assert "project_configs" in indexes
     assert "historical_metrics" in indexes
     assert "users" in indexes
+    assert "ai_history" in indexes
 
     # Verify TTL and compound indexes in scan_reports
     col_indexes = mock_db.db["scan_reports"].index_information()
     assert "idx_scan_job_id_unique" in col_indexes
     assert "idx_scan_reports_ttl" in col_indexes
     assert "idx_scan_project_created_compound" in col_indexes
+    assert "idx_ai_history_ttl" in mock_db.db["ai_history"].index_information()
 
 
 def test_save_scan_report_enforces_redaction(mock_db):

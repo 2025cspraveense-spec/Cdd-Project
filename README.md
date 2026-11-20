@@ -81,7 +81,7 @@
 │   ├── public/index.html         # Single Page Application HTML shell
 │   └── src/
 │       ├── index.js              # React 18.2 entrypoint
-│       ├── App.js                # Authenticated API-backed dashboard and scan workflows
+│       ├── App.js                # Authenticated dashboard, scan workflows, and optional AI assistance
 │       └── App.css               # Responsive dark glassmorphic dashboard styling
 ├── app/                          # Flask 3.1 REST API & Analysis Engine Package
 │   ├── __init__.py               # Application factory, rate limiter, redacting logging
@@ -90,6 +90,7 @@
 │   ├── ingestion.py              # 4 Ingestion modes, canonical Zip-Slip defense, SSRF blocker
 │   ├── redactor.py               # Strict redaction (preserves first 4 chars: AKIA****************)
 │   ├── routes.py                 # Auth, scans, metrics, and redacted PDF/HTML/JSON/SARIF exports
+│   ├── ai_assistant.py           # Opt-in, consent-gated Gemini assistance using redacted metadata
 │   ├── scanner_orchestrator.py   # ThreadPoolExecutor concurrency, state machine, lifecycle
 │   ├── scoring.py                # Weighted scoring, redacted-field SHA-256 fingerprints, grading
 │   ├── vault_client.py           # HashiCorp Vault KV-v2 bootstrap, rotation, and leases
@@ -106,6 +107,7 @@
 │   └── create_admin.py           # Interactive administrator provisioning
 └── tests/                        # Pytest unit and API integration suite
     ├── conftest.py
+    ├── test_ai_assistant.py
     ├── test_auth_rbac.py
     ├── test_db.py
     ├── test_ingestion.py
@@ -265,6 +267,20 @@ Git repositories, and inline Dockerfiles. Scan status and progress are polled
 from the Flask API; completed findings include severity, source location,
 redacted evidence, and remediation guidance. Historical risk scores are shown
 for the selected project.
+
+Scan records, status polling, results, metrics, and AI history are scoped to the
+authenticated user. The dashboard restores the selected scan after refresh;
+MongoDB's existing 30-day TTL policy still applies.
+
+The optional AI assistant supports Gemini and Groq. Set `AI_PROVIDER` and the
+matching `GEMINI_API_KEY`/`GROQ_API_KEY` plus model setting in `.env`, or seed
+the provider key in Vault KV-v2. Each request requires explicit consent in the
+dashboard. It sends redacted finding/scan metadata and the submitted question
+only—never source files or evidence snippets—and stores redacted responses in
+user- and scan-scoped history. AI output is advisory and is not verified or
+applied automatically. The dashboard displays backend model response latency
+and labels cached responses. A missing key leaves normal scanning and report
+generation available.
 
 Completed scans can be exported through
 `GET /api/v1/scans/<job_id>/reports/<format>` with a bearer token. Supported

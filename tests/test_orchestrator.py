@@ -2,6 +2,7 @@
 
 import os
 import time
+import zipfile
 import pytest
 
 from app.db import DatabaseClient
@@ -120,3 +121,60 @@ def test_orchestrator_failure_handling_and_cleanup(orchestrator_fixture, tmp_pat
     assert final_report is not None
     assert final_report["status"] == ScanStatus.FAILED
     assert final_report["error_message"] is not None
+
+
+def test_uploaded_archive_is_removed_after_scan(orchestrator_fixture, tmp_path):
+    orchestrator, db, _ = orchestrator_fixture
+    job_id = "job-orch-archive-cleanup"
+    archive_path = tmp_path / f"{job_id}_uploaded-project.zip"
+    with zipfile.ZipFile(archive_path, "w") as archive:
+        archive.writestr("README.txt", "safe sample")
+
+    orchestrator.submit_scan(
+        job_id=job_id,
+        project_id="archive-cleanup",
+        ingestion_mode="archive",
+        target=str(archive_path),
+        user={"username": "test_analyst"},
+        cleanup_archive=True,
+    )
+
+    deadline = time.time() + 10
+    report = None
+    while time.time() < deadline:
+        report = db.get_scan_report(job_id)
+        if report and report.get("status") in (ScanStatus.COMPLETED, ScanStatus.FAILED):
+            break
+        time.sleep(0.1)
+
+    assert report is not None
+    assert report["status"] == ScanStatus.COMPLETED
+    assert not archive_path.exists()
+
+
+def test_invalid_uploaded_archive_is_removed_after_failure(orchestrator_fixture, tmp_path):
+    orchestrator, db, _ = orchestrator_fixture
+    job_id = "job-orch-invalid-archive"
+    archive_path = tmp_path / f"{job_id}_upload.zip"
+    archive_path.write_text("not a zip archive")
+
+    orchestrator.submit_scan(
+        job_id=job_id,
+        project_id="invalid-archive-cleanup",
+        ingestion_mode="archive",
+        target=str(archive_path),
+        user={"username": "test_analyst"},
+        cleanup_archive=True,
+    )
+
+    deadline = time.time() + 10
+    report = None
+    while time.time() < deadline:
+        report = db.get_scan_report(job_id)
+        if report and report.get("status") == ScanStatus.FAILED:
+            break
+        time.sleep(0.1)
+
+    assert report is not None
+    assert report["status"] == ScanStatus.FAILED
+    assert not archive_path.exists()

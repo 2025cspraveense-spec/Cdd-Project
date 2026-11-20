@@ -146,6 +146,10 @@ class DatabaseClient:
                 [("project_id", ASCENDING), ("created_at", DESCENDING)],
                 name="idx_scan_project_created_compound"
             )
+            scan_reports.create_index(
+                [("submitted_by_id", ASCENDING), ("created_at", DESCENDING)],
+                name="idx_scan_owner_created_compound"
+            )
             # TTL Index: Automatically expire old scan records
             scan_reports.create_index(
                 [("expires_at", ASCENDING)],
@@ -188,6 +192,23 @@ class DatabaseClient:
             users.create_index([("username", ASCENDING)], unique=True, name="idx_user_username_unique")
             created_indexes["users"] = [idx["name"] for idx in users.list_indexes()]
 
+            ai_history = self.db["ai_history"]
+            ai_history.create_index(
+                [("user_id", ASCENDING), ("cache_key", ASCENDING)],
+                unique=True,
+                name="idx_ai_owner_cache_unique",
+            )
+            ai_history.create_index(
+                [("user_id", ASCENDING), ("scan_id", ASCENDING), ("created_at", DESCENDING)],
+                name="idx_ai_owner_scan_created",
+            )
+            ai_history.create_index(
+                [("expires_at", ASCENDING)],
+                expireAfterSeconds=0,
+                name="idx_ai_history_ttl",
+            )
+            created_indexes["ai_history"] = [idx["name"] for idx in ai_history.list_indexes()]
+
             logger.info("All MongoDB compound, unique, and TTL indexes verified/created.")
         except Exception as e:
             logger.error(f"Error creating MongoDB indexes: {e}")
@@ -216,9 +237,31 @@ class DatabaseClient:
         )
         return sanitized
 
-    def get_scan_report(self, job_id: str) -> Optional[Dict[str, Any]]:
-        """Retrieves a scan report by job_id, removing internal Mongo _id."""
-        doc = self.db["scan_reports"].find_one({"job_id": job_id})
+    @staticmethod
+    def _owner_filter(
+        owner_id: Optional[str],
+        owner_username: Optional[str],
+    ) -> Dict[str, Any]:
+        """Match current owner identity and legacy username-only records."""
+        identities = []
+        if owner_id:
+            identities.append({"submitted_by_id": owner_id})
+        if owner_username:
+            identities.append({"submitted_by": owner_username})
+        if not identities:
+            return {}
+        return identities[0] if len(identities) == 1 else {"$or": identities}
+
+    def get_scan_report(
+        self,
+        job_id: str,
+        owner_id: Optional[str] = None,
+        owner_username: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """Retrieves a scan report, optionally restricting it to its owner."""
+        query = {"job_id": job_id}
+        query.update(self._owner_filter(owner_id, owner_username))
+        doc = self.db["scan_reports"].find_one(query)
         if doc and "_id" in doc:
             doc["_id"] = str(doc["_id"])
         return doc
@@ -229,15 +272,19 @@ class DatabaseClient:
         status: Optional[str] = None,
         limit: int = 50,
         skip: int = 0,
+        owner_id: Optional[str] = None,
+        owner_username: Optional[str] = None,
+        sort_order: int = DESCENDING,
     ) -> List[Dict[str, Any]]:
-        """Lists scan reports filtered by project and status."""
+        """Lists scan reports with optional owner, project, and status filters."""
         query = {}
         if project_id:
             query["project_id"] = project_id
         if status:
             query["status"] = status.upper()
+        query.update(self._owner_filter(owner_id, owner_username))
 
-        cursor = self.db["scan_reports"].find(query).sort("created_at", DESCENDING).skip(skip).limit(limit)
+        cursor = self.db["scan_reports"].find(query).sort("created_at", sort_order).skip(skip).limit(limit)
         results = []
         for doc in cursor:
             if "_id" in doc:
@@ -293,11 +340,58 @@ class DatabaseClient:
         doc["expires_at"] = now + datetime.timedelta(seconds=self.ttl_seconds)
         self.db["historical_metrics"].insert_one(doc)
 
-    def get_historical_metrics(self, project_id: str, limit: int = 30) -> List[Dict[str, Any]]:
-        """Retrieves historical metrics for a project."""
+    def get_historical_metrics(
+        self,
+        project_id: str,
+        limit: int = 30,
+        owner_id: Optional[str] = None,
+        owner_username: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Retrieves project metrics, optionally restricted to their owner."""
+        query = {"project_id": project_id}
+        query.update(self._owner_filter(owner_id, owner_username))
         cursor = (
             self.db["historical_metrics"]
-            .find({"project_id": project_id})
+            .find(query)
+            .sort("created_at", DESCENDING)
+            .limit(limit)
+        )
+        results = []
+        for doc in cursor:
+            if "_id" in doc:
+                doc["_id"] = str(doc["_id"])
+            results.append(doc)
+        return results
+
+    def get_ai_response(self, user_id: str, cache_key: str) -> Optional[Dict[str, Any]]:
+        """Find a cached AI response owned by the requesting user."""
+        doc = self.db["ai_history"].find_one({"user_id": user_id, "cache_key": cache_key})
+        if doc and "_id" in doc:
+            doc["_id"] = str(doc["_id"])
+        return doc
+
+    def save_ai_response(self, response: Dict[str, Any]) -> Dict[str, Any]:
+        """Persist a redacted AI response keyed to a user and request context."""
+        sanitized = redact_dict(response)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        sanitized.setdefault("created_at", now)
+        sanitized["updated_at"] = now
+        sanitized.setdefault(
+            "expires_at",
+            now + datetime.timedelta(seconds=self.ttl_seconds),
+        )
+        self.db["ai_history"].update_one(
+            {"user_id": sanitized["user_id"], "cache_key": sanitized["cache_key"]},
+            {"$setOnInsert": sanitized},
+            upsert=True,
+        )
+        return self.get_ai_response(sanitized["user_id"], sanitized["cache_key"]) or sanitized
+
+    def list_ai_history(self, user_id: str, scan_id: str, limit: int = 30) -> List[Dict[str, Any]]:
+        """List persisted AI responses for one user and scan."""
+        cursor = (
+            self.db["ai_history"]
+            .find({"user_id": user_id, "scan_id": scan_id})
             .sort("created_at", DESCENDING)
             .limit(limit)
         )

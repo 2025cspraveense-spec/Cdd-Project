@@ -11,6 +11,12 @@ from xml.sax.saxutils import escape
 from flask import Blueprint, current_app, g, jsonify, request, send_file
 from werkzeug.utils import secure_filename
 
+from app import limiter
+from app.ai_assistant import (
+    AIConsentRequiredError,
+    AIProviderError,
+    AIUnavailableError,
+)
 from app.redactor import redact_dict
 from app.auth import (
     Role,
@@ -25,6 +31,15 @@ from app.auth import (
 from app.scanner_orchestrator import ScanStatus
 
 api_bp = Blueprint("api_v1", __name__, url_prefix="/api/v1")
+
+
+def _owned_scan(job_id: str):
+    user = g.current_user
+    return current_app.extensions["db"].get_scan_report(
+        job_id,
+        owner_id=user.get("user_id"),
+        owner_username=user.get("username"),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -159,6 +174,7 @@ def submit_scan():
     project_id = "default-project"
     target_data = None
     selected_engines = None
+    uploaded_archive = False
 
     # Handle multipart/form-data (file upload)
     if request.content_type and "multipart/form-data" in request.content_type:
@@ -186,8 +202,16 @@ def submit_scan():
             # Save uploaded archive to temporary storage
             temp_dir = tempfile.gettempdir()
             saved_archive_path = os.path.join(temp_dir, f"{job_id}_{filename}")
-            file_obj.save(saved_archive_path)
+            try:
+                file_obj.save(saved_archive_path)
+            except Exception:
+                try:
+                    os.remove(saved_archive_path)
+                except FileNotFoundError:
+                    pass
+                raise
             target_data = saved_archive_path
+            uploaded_archive = True
 
         elif ingestion_mode == "dockerfile":
             if "file" in request.files and request.files["file"].filename:
@@ -231,6 +255,7 @@ def submit_scan():
         target=target_data,
         user=g.current_user,
         selected_engines=selected_engines,
+        cleanup_archive=uploaded_archive,
     )
 
     response_data = {
@@ -253,8 +278,7 @@ def submit_scan():
 @require_auth
 def get_scan_status(job_id: str):
     """Retrieve the real-time progress and status of a scan job."""
-    db = current_app.extensions["db"]
-    report = db.get_scan_report(job_id)
+    report = _owned_scan(job_id)
 
     if not report:
         return jsonify({"status": "error", "error": "Scan job not found", "job_id": job_id}), 404
@@ -276,8 +300,7 @@ def get_scan_status(job_id: str):
 @require_auth
 def get_scan_results(job_id: str):
     """Retrieve full scan results, risk score, grade, and redacted findings."""
-    db = current_app.extensions["db"]
-    report = db.get_scan_report(job_id)
+    report = _owned_scan(job_id)
 
     if not report:
         return jsonify({"status": "error", "error": "Scan job not found", "job_id": job_id}), 404
@@ -325,7 +348,7 @@ def download_scan_report(job_id: str, report_format: str):
             "error": "Unsupported report format. Choose pdf, html, json, or sarif.",
         }), 400
 
-    report = current_app.extensions["db"].get_scan_report(job_id)
+    report = _owned_scan(job_id)
     if not report:
         return jsonify({"status": "error", "error": "Scan job not found", "job_id": job_id}), 404
     if report.get("status") != ScanStatus.COMPLETED:
@@ -515,14 +538,33 @@ th,td{{border:1px solid #d5deea;padding:10px;text-align:left}}th{{background:#ed
 @api_bp.route("/scans", methods=["GET"])
 @require_auth
 def list_scans():
-    """List scan jobs with optional project and status filters."""
+    """List the current user's scan jobs with pagination and sorting."""
     db = current_app.extensions["db"]
     project_id = request.args.get("project_id")
     status = request.args.get("status")
-    limit = min(int(request.args.get("limit", 20)), 100)
-    skip = int(request.args.get("skip", 0))
+    try:
+        limit = int(request.args.get("limit", 20))
+        skip = int(request.args.get("skip", 0))
+    except ValueError:
+        return jsonify({"status": "error", "error": "'limit' and 'skip' must be integers."}), 400
+    if not 1 <= limit <= 100 or skip < 0:
+        return jsonify({"status": "error", "error": "'limit' must be 1-100 and 'skip' cannot be negative."}), 400
 
-    scans = db.list_scan_reports(project_id=project_id, status=status, limit=limit, skip=skip)
+    sort_by = request.args.get("sort", "created_at")
+    sort_direction = request.args.get("order", "desc").lower()
+    if sort_by != "created_at" or sort_direction not in {"asc", "desc"}:
+        return jsonify({"status": "error", "error": "Scans can be sorted by created_at in asc or desc order."}), 400
+
+    user = g.current_user
+    scans = db.list_scan_reports(
+        project_id=project_id,
+        status=status,
+        limit=limit,
+        skip=skip,
+        owner_id=user.get("user_id"),
+        owner_username=user.get("username"),
+        sort_order=1 if sort_direction == "asc" else -1,
+    )
     
     # Strip heavy findings list for overview list
     summary_list = []
@@ -548,8 +590,19 @@ def list_scans():
 def get_project_metrics(project_id: str):
     """Retrieve security metrics and historical trends for a project."""
     db = current_app.extensions["db"]
-    limit = min(int(request.args.get("limit", 30)), 100)
-    metrics = db.get_historical_metrics(project_id, limit=limit)
+    try:
+        limit = int(request.args.get("limit", 30))
+    except ValueError:
+        return jsonify({"status": "error", "error": "'limit' must be an integer."}), 400
+    if not 1 <= limit <= 100:
+        return jsonify({"status": "error", "error": "'limit' must be between 1 and 100."}), 400
+    user = g.current_user
+    metrics = db.get_historical_metrics(
+        project_id,
+        limit=limit,
+        owner_id=user.get("user_id"),
+        owner_username=user.get("username"),
+    )
 
     return jsonify(redact_dict({
         "status": "success",
@@ -608,3 +661,103 @@ def renew_vault_token():
         return jsonify({"status": "error", "error": "Authenticated Vault is required for token renewal."}), 503
     result = vault.renew_token(increment=increment)
     return jsonify(redact_dict({"status": "success", "result": result})), 200
+
+
+def _invoke_ai(task: str, *, finding_required: bool = False, question_required: bool = False):
+    payload = request.get_json(silent=True)
+    if not isinstance(payload, dict):
+        return jsonify({"status": "error", "error": "A JSON request body is required."}), 400
+    scan_id = payload.get("scan_id")
+    if not isinstance(scan_id, str) or not scan_id.strip():
+        return jsonify({"status": "error", "error": "'scan_id' is required."}), 400
+
+    report = _owned_scan(scan_id.strip())
+    if not report:
+        return jsonify({"status": "error", "error": "Scan not found."}), 404
+    if report.get("status") != ScanStatus.COMPLETED:
+        return jsonify({"status": "error", "error": "AI assistance requires a completed scan."}), 409
+
+    finding = None
+    if finding_required:
+        fingerprint = payload.get("finding_fingerprint")
+        if not isinstance(fingerprint, str) or not fingerprint.strip():
+            return jsonify({"status": "error", "error": "'finding_fingerprint' is required."}), 400
+        finding = next(
+            (item for item in report.get("findings", [])
+             if item.get("fingerprint") == fingerprint.strip()),
+            None,
+        )
+        if not finding:
+            return jsonify({"status": "error", "error": "Finding not found in this scan."}), 404
+
+    question = payload.get("question")
+    if question_required and (not isinstance(question, str) or not question.strip() or len(question) > 2000):
+        return jsonify({"status": "error", "error": "'question' must contain 1-2000 characters."}), 400
+
+    try:
+        entry = current_app.extensions["ai_assistant"].respond(
+            user_id=str(g.current_user.get("user_id") or ""),
+            scan_id=scan_id.strip(),
+            task=task,
+            report=report,
+            consent=payload.get("consent") is True,
+            finding=finding,
+            question=question.strip() if isinstance(question, str) else None,
+        )
+    except AIConsentRequiredError as error:
+        return jsonify({"status": "error", "error": str(error)}), 400
+    except AIUnavailableError as error:
+        return jsonify({"status": "error", "error": str(error)}), 503
+    except AIProviderError:
+        current_app.logger.warning("AI %s request failed for scan %s.", task, scan_id)
+        return jsonify({"status": "error", "error": "The AI provider request failed."}), 502
+
+    return jsonify(redact_dict({"status": "success", "entry": entry})), 200
+
+
+@api_bp.route("/ai/explain", methods=["POST"])
+@limiter.limit("10 per minute")
+@require_auth
+def ai_explain():
+    return _invoke_ai("explain", finding_required=True)
+
+
+@api_bp.route("/ai/remediate", methods=["POST"])
+@limiter.limit("10 per minute")
+@require_auth
+def ai_remediate():
+    return _invoke_ai("remediate", finding_required=True)
+
+
+@api_bp.route("/ai/chat", methods=["POST"])
+@limiter.limit("10 per minute")
+@require_auth
+def ai_chat():
+    return _invoke_ai("chat", question_required=True)
+
+
+@api_bp.route("/ai/summary", methods=["POST"])
+@limiter.limit("10 per minute")
+@require_auth
+def ai_summary():
+    return _invoke_ai("summary")
+
+
+@api_bp.route("/ai/history/<scan_id>", methods=["GET"])
+@limiter.limit("30 per minute")
+@require_auth
+def ai_history(scan_id: str):
+    if not _owned_scan(scan_id):
+        return jsonify({"status": "error", "error": "Scan not found."}), 404
+    try:
+        limit = int(request.args.get("limit", 30))
+    except ValueError:
+        return jsonify({"status": "error", "error": "'limit' must be an integer."}), 400
+    if not 1 <= limit <= 100:
+        return jsonify({"status": "error", "error": "'limit' must be between 1 and 100."}), 400
+    entries = current_app.extensions["db"].list_ai_history(
+        str(g.current_user.get("user_id") or ""),
+        scan_id,
+        limit=limit,
+    )
+    return jsonify(redact_dict({"status": "success", "entries": entries})), 200

@@ -12,6 +12,7 @@ import concurrent.futures
 from datetime import datetime, timezone
 import logging
 import os
+import tempfile
 from typing import Any, Dict, List, Optional
 
 from app.db import DatabaseClient
@@ -89,6 +90,7 @@ class ScannerOrchestrator:
         target: Any,
         user: Dict[str, Any],
         selected_engines: Optional[List[str]] = None,
+        cleanup_archive: bool = False,
     ) -> Dict[str, Any]:
         """Registers a new scan job and queues it for asynchronous parallel execution."""
         now = datetime.now(timezone.utc)
@@ -97,8 +99,9 @@ class ScannerOrchestrator:
             "project_id": project_id,
             "status": ScanStatus.PENDING,
             "ingestion_mode": ingestion_mode,
-            "target": str(target) if ingestion_mode != "dockerfile" else "<raw_dockerfile>",
+            "target": f"<{ingestion_mode}_source>",
             "submitted_by": user.get("username", "unknown"),
+            "submitted_by_id": user.get("user_id"),
             "created_at": now,
             "updated_at": now,
             "progress": {
@@ -112,18 +115,24 @@ class ScannerOrchestrator:
             "error_message": None,
         }
 
-        # Save initial state in MongoDB
-        self.db.save_scan_report(initial_report)
-
-        # Dispatch background job
-        self.job_executor.submit(
-            self._process_scan_job,
-            job_id=job_id,
-            project_id=project_id,
-            ingestion_mode=ingestion_mode,
-            target=target,
-            selected_engines=selected_engines,
-        )
+        try:
+            # Save initial state before dispatching the background job.
+            self.db.save_scan_report(initial_report)
+            self.job_executor.submit(
+                self._process_scan_job,
+                job_id=job_id,
+                project_id=project_id,
+                ingestion_mode=ingestion_mode,
+                target=target,
+                selected_engines=selected_engines,
+                owner_id=user.get("user_id"),
+                owner_username=user.get("username", "unknown"),
+                cleanup_archive=cleanup_archive,
+            )
+        except Exception:
+            if cleanup_archive:
+                self._cleanup_uploaded_archive(target, job_id)
+            raise
 
         return initial_report
 
@@ -162,6 +171,9 @@ class ScannerOrchestrator:
         ingestion_mode: str,
         target: Any,
         selected_engines: Optional[List[str]] = None,
+        owner_id: Optional[str] = None,
+        owner_username: Optional[str] = None,
+        cleanup_archive: bool = False,
     ) -> None:
         """Background execution worker for a scan job."""
         workspace_path = None
@@ -282,6 +294,8 @@ class ScannerOrchestrator:
             self.db.save_historical_metrics({
                 "project_id": project_id,
                 "job_id": job_id,
+                "submitted_by_id": owner_id,
+                "submitted_by": owner_username,
                 "raw_score": score_report["raw_score"],
                 "final_score": score_report["final_score"],
                 "grade": score_report["grade"],
@@ -311,7 +325,33 @@ class ScannerOrchestrator:
                     cleanup_workspace(workspace_path, base_dir=self.workspace_base_dir)
                     logger.info(f"Workspace cleaned up for job {job_id}: {workspace_path}")
                 except Exception as cleanup_err:
-                    logger.warning(f"Error cleaning up workspace {workspace_path}: {cleanup_err}")
+                    logger.warning("Workspace cleanup failed (%s).", type(cleanup_err).__name__)
+            if cleanup_archive:
+                self._cleanup_uploaded_archive(target, job_id)
+
+    @staticmethod
+    def _cleanup_uploaded_archive(target: Any, job_id: str) -> None:
+        if not isinstance(target, str) or not job_id:
+            return
+        archive_path = os.path.abspath(target)
+        temp_root = os.path.realpath(tempfile.gettempdir())
+        try:
+            within_temp = os.path.commonpath(
+                (temp_root, os.path.realpath(archive_path))
+            ) == temp_root
+        except ValueError:
+            within_temp = False
+        if os.path.islink(archive_path) or not os.path.basename(archive_path).startswith(
+            f"{job_id}_"
+        ) or not within_temp:
+            logger.warning("Uploaded archive cleanup skipped for an unexpected path.")
+            return
+        try:
+            os.remove(archive_path)
+        except FileNotFoundError:
+            pass
+        except OSError as error:
+            logger.warning("Uploaded archive cleanup failed (%s).", type(error).__name__)
 
     def shutdown(self) -> None:
         """Gracefully shuts down the thread pool executors."""

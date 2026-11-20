@@ -118,6 +118,8 @@ def test_api_list_scans(client, viewer_headers, db):
     db.save_scan_report({
         "job_id": "job-list-1",
         "project_id": "proj-list-test",
+        "submitted_by_id": "user_viewer_01",
+        "submitted_by": "viewer_user",
         "status": "COMPLETED",
         "grade": "A",
         "scores": {"final_score": 5},
@@ -136,6 +138,8 @@ def test_api_metrics_endpoint(client, viewer_headers, db):
     db.save_historical_metrics({
         "project_id": "proj-metrics-test",
         "job_id": "job-metric-1",
+        "submitted_by_id": "user_viewer_01",
+        "submitted_by": "viewer_user",
         "raw_score": 15,
         "final_score": 15,
         "grade": "B",
@@ -155,6 +159,8 @@ def test_api_report_exports_are_redacted_and_sarif_compliant(client, viewer_head
     db.save_scan_report({
         "job_id": "job-report-test",
         "project_id": "report-project",
+        "submitted_by_id": "user_viewer_01",
+        "submitted_by": "viewer_user",
         "status": "COMPLETED",
         "grade": "B",
         "scores": {
@@ -203,6 +209,8 @@ def test_api_reports_require_completed_scan(client, viewer_headers, db):
     db.save_scan_report({
         "job_id": "job-report-pending",
         "project_id": "report-project",
+        "submitted_by_id": "user_viewer_01",
+        "submitted_by": "viewer_user",
         "status": "SCANNING",
     })
 
@@ -213,6 +221,98 @@ def test_api_reports_require_completed_scan(client, viewer_headers, db):
 
     assert response.status_code == 409
     assert response.get_json()["status"] == "error"
+
+
+def test_scan_history_and_reports_are_isolated_by_user(client, viewer_headers, analyst_headers, db):
+    db.save_scan_report({
+        "job_id": "job-private-to-analyst",
+        "project_id": "private-project",
+        "submitted_by_id": "user_analyst_01",
+        "submitted_by": "analyst_user",
+        "status": "COMPLETED",
+        "findings": [],
+        "scores": {"final_score": 0},
+    })
+
+    assert client.get(
+        "/api/v1/scans/job-private-to-analyst/results",
+        headers=viewer_headers,
+    ).status_code == 404
+    assert client.get(
+        "/api/v1/scans/job-private-to-analyst/reports/json",
+        headers=viewer_headers,
+    ).status_code == 404
+    viewer_scans = client.get("/api/v1/scans", headers=viewer_headers).get_json()["scans"]
+    assert all(scan["job_id"] != "job-private-to-analyst" for scan in viewer_scans)
+    assert client.get(
+        "/api/v1/scans/job-private-to-analyst/results",
+        headers=analyst_headers,
+    ).status_code == 200
+
+
+def test_ai_routes_require_consent_and_restore_owned_history(
+    client, viewer_headers, analyst_headers, db
+):
+    raw_secret = "".join(["AK", "IA", "1234567890ABCDEF"])
+    db.save_scan_report({
+        "job_id": "job-ai-viewer",
+        "project_id": "ai-project",
+        "submitted_by_id": "user_viewer_01",
+        "submitted_by": "viewer_user",
+        "status": "COMPLETED",
+        "grade": "F",
+        "scores": {"final_score": 100, "severity_counts": {"critical": 1}},
+        "findings": [{
+            "fingerprint": "ai-finding-1",
+            "rule_id": "SAST-TEST",
+            "engine_name": "SASTEngine",
+            "category": "Injection",
+            "severity": "critical",
+            "description": f"Detected {raw_secret}",
+            "raw_secret": raw_secret,
+            "match_content": f"source = '{raw_secret}'",
+        }],
+    })
+    assistant = client.application.extensions["ai_assistant"]
+    prompts = []
+    assistant.generator = lambda prompt: prompts.append(prompt) or "Suggested remediation; not verified."
+
+    denied = client.post(
+        "/api/v1/ai/explain",
+        json={"scan_id": "job-ai-viewer", "finding_fingerprint": "ai-finding-1"},
+        headers=viewer_headers,
+    )
+    assert denied.status_code == 400
+    assert prompts == []
+
+    for endpoint, extra in (
+        ("explain", {"finding_fingerprint": "ai-finding-1"}),
+        ("remediate", {"finding_fingerprint": "ai-finding-1"}),
+        ("chat", {"question": "Why is this scan Grade F?"}),
+        ("summary", {}),
+    ):
+        response = client.post(
+            f"/api/v1/ai/{endpoint}",
+            json={"scan_id": "job-ai-viewer", "consent": True, **extra},
+            headers=viewer_headers,
+        )
+        assert response.status_code == 200
+        assert response.get_json()["entry"]["ai_assisted"] is True
+
+    history = client.get("/api/v1/ai/history/job-ai-viewer", headers=viewer_headers)
+    assert history.status_code == 200
+    assert len(history.get_json()["entries"]) == 4
+    assert client.get("/api/v1/ai/history/job-ai-viewer", headers=analyst_headers).status_code == 404
+    assert raw_secret not in history.get_data(as_text=True)
+
+    assistant.api_key = None
+    assistant.generator = None
+    unavailable = client.post(
+        "/api/v1/ai/summary",
+        json={"scan_id": "job-ai-viewer", "consent": True},
+        headers=viewer_headers,
+    )
+    assert unavailable.status_code == 503
 
 
 def test_api_vault_rotate_secret_endpoint(client, admin_headers, analyst_headers):

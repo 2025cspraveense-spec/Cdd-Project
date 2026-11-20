@@ -19,6 +19,7 @@ from app.redactor import RedactingFilter, RedactingFormatter, redact_dict
 from app.scanner_orchestrator import ScannerOrchestrator
 from app.vault_client import VaultClient
 from app.database_lease import DatabaseLeaseManager
+from app.ai_assistant import AIAssistant
 
 limiter = Limiter(
     key_func=get_remote_address,
@@ -114,7 +115,13 @@ def create_app(
         if app.config.get("VAULT_BOOTSTRAP_ENV", False):
             vault_secrets = vault.provision_secrets({
                 key: app.config[key]
-                for key in ("SECRET_KEY", "JWT_SECRET_KEY", "MONGO_URI")
+                for key in (
+                    "SECRET_KEY",
+                    "JWT_SECRET_KEY",
+                    "MONGO_URI",
+                    "GEMINI_API_KEY",
+                    "GROQ_API_KEY",
+                )
                 if app.config.get(key)
             })
             for key in ("SECRET_KEY", "JWT_SECRET_KEY"):
@@ -170,11 +177,36 @@ def create_app(
         allowed_local_paths=app.config.get("ALLOWED_LOCAL_SCAN_PATHS"),
         osv_enabled=app.config.get("OSV_ENABLED", True),
     )
+    ai_provider = app.config.get("AI_PROVIDER", "gemini").strip().lower()
+    if ai_provider == "groq":
+        ai_api_key = app.config.get("GROQ_API_KEY", "")
+        ai_model = app.config.get("GROQ_MODEL", "openai/gpt-oss-20b")
+        ai_secret_name = "GROQ_API_KEY"
+    elif ai_provider == "gemini":
+        ai_api_key = app.config.get("GEMINI_API_KEY", "")
+        ai_model = app.config.get("GEMINI_MODEL", "gemini-3.8-flash")
+        ai_secret_name = "GEMINI_API_KEY"
+    else:
+        raise RuntimeError("AI_PROVIDER must be either 'gemini' or 'groq'.")
+    if not ai_api_key and vault.is_connected:
+        try:
+            ai_api_key = vault.get_secret(ai_secret_name) or ""
+        except (KeyError, RuntimeError):
+            ai_api_key = ""
+    ai_assistant = AIAssistant(
+        database=db,
+        api_key=ai_api_key,
+        model=ai_model,
+        timeout_seconds=app.config.get("GEMINI_TIMEOUT_SECONDS", 15),
+        generator=app.config.get("AI_GENERATOR"),
+        provider=ai_provider,
+    )
 
     # 6. Attach Singletons to Extensions Dictionary
     app.extensions["vault"] = vault
     app.extensions["db"] = db
     app.extensions["orchestrator"] = orchestrator
+    app.extensions["ai_assistant"] = ai_assistant
     app.extensions["database_lease_manager"] = None
     if database_credentials:
         lease_manager = DatabaseLeaseManager(

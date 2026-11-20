@@ -158,6 +158,10 @@ export default function App() {
   const [submitting, setSubmitting] = useState(false);
   const [reportBusy, setReportBusy] = useState("");
   const [engineFilter, setEngineFilter] = useState("all");
+  const [aiConsent, setAiConsent] = useState(false);
+  const [aiBusy, setAiBusy] = useState("");
+  const [aiEntries, setAiEntries] = useState([]);
+  const [aiQuestion, setAiQuestion] = useState("");
 
   const selectedJob = jobs.find((job) => job.job_id === selectedJobId);
   const findings = scanResults?.findings || [];
@@ -213,8 +217,15 @@ export default function App() {
         const response = await apiRequest("/scans?limit=30", token);
         const data = await response.json();
         if (!cancelled) {
-          setJobs(data.scans || []);
-          setSelectedJobId((current) => current || data.scans?.[0]?.job_id || "");
+          const scans = data.scans || [];
+          setJobs(scans);
+          setSelectedJobId((current) => {
+            if (scans.some((scan) => scan.job_id === current)) return current;
+            const remembered = window.localStorage.getItem("slg_selected_scan");
+            return scans.some((scan) => scan.job_id === remembered)
+              ? remembered
+              : (scans[0]?.job_id || "");
+          });
           setApiError("");
         }
       } catch (error) {
@@ -229,7 +240,10 @@ export default function App() {
     };
   }, [token]);
 
-  const activeJobIds = selectedJob && ACTIVE_STATUSES.has(selectedJob.status) ? selectedJob.job_id : "";
+  const activeJobIds = jobs
+    .filter((job) => ACTIVE_STATUSES.has(job.status))
+    .map((job) => job.job_id)
+    .join(",");
   useEffect(() => {
     if (!token || !activeJobIds) return undefined;
     let cancelled = false;
@@ -292,6 +306,19 @@ export default function App() {
     };
   }, [projectId, token]);
 
+  useEffect(() => {
+    if (!token || !selectedJobId) {
+      setAiEntries([]);
+      return undefined;
+    }
+    let cancelled = false;
+    apiRequest(`/ai/history/${encodeURIComponent(selectedJobId)}?limit=30`, token)
+      .then((response) => response.json())
+      .then((data) => { if (!cancelled) setAiEntries(data.entries || []); })
+      .catch((error) => { if (!cancelled) setApiError(error.message); });
+    return () => { cancelled = true; };
+  }, [selectedJobId, token]);
+
   async function handleLogin(username, password, clearPassword) {
     setLoginBusy(true);
     setLoginError("");
@@ -328,6 +355,9 @@ export default function App() {
     setJobs([]);
     setScanResults(null);
     setSelectedJobId("");
+    setAiConsent(false);
+    setAiEntries([]);
+    setAiQuestion("");
     setApiError("");
   }
 
@@ -365,6 +395,7 @@ export default function App() {
       };
       setJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
       setSelectedJobId(job.job_id);
+      window.localStorage.setItem("slg_selected_scan", job.job_id);
       setScanResults(null);
       if (mode === "archive") setArchive(null);
       setTarget("");
@@ -395,6 +426,42 @@ export default function App() {
     } finally {
       setReportBusy("");
     }
+  }
+
+  async function requestAI(task, extra = {}) {
+    if (!aiConsent) {
+      setApiError("Confirm the AI data-sharing consent before requesting Gemini assistance.");
+      return null;
+    }
+    if (!selectedJobId) return null;
+    setAiBusy(task);
+    setApiError("");
+    try {
+      const response = await apiRequest(`/ai/${task}`, token, {
+        method: "POST",
+        body: { scan_id: selectedJobId, consent: true, ...extra },
+      });
+      const data = await response.json();
+      setAiEntries((current) => [
+        data.entry,
+        ...current.filter((entry) => entry.cache_key !== data.entry.cache_key),
+      ]);
+      return data.entry;
+    } catch (error) {
+      setApiError(error.message);
+      return null;
+    } finally {
+      setAiBusy("");
+      setAiConsent(false);
+    }
+  }
+
+  async function submitAIQuestion(event) {
+    event.preventDefault();
+    const question = aiQuestion.trim();
+    if (!question) return;
+    const entry = await requestAI("chat", { question });
+    if (entry) setAiQuestion("");
   }
 
   if (!token) return <Login onLogin={handleLogin} onRegister={handleRegister} onClearError={() => setLoginError("")} busy={loginBusy} error={loginError} />;
@@ -464,7 +531,7 @@ export default function App() {
               {jobs.length === 0 ? <div className="empty-state"><span>⌁</span><strong>No scans yet</strong><p>Launch a scan to see progress and results here.</p></div> : <div className="jobs-list">
                 {jobs.map((job) => {
                   const percentage = Math.max(0, Math.min(100, Number(job.progress?.percentage || (job.status === "COMPLETED" ? 100 : 0))));
-                  return <button type="button" key={job.job_id} className={`job-row ${selectedJobId === job.job_id ? "selected" : ""}`} onClick={() => { setSelectedJobId(job.job_id); setProjectId(job.project_id || projectId); }}>
+                  return <button type="button" key={job.job_id} className={`job-row ${selectedJobId === job.job_id ? "selected" : ""}`} onClick={() => { setSelectedJobId(job.job_id); window.localStorage.setItem("slg_selected_scan", job.job_id); setProjectId(job.project_id || projectId); }}>
                     <span className={`job-state ${String(job.status).toLowerCase()}`}><i className="status-dot" />{job.status || "UNKNOWN"}</span>
                     <span className="job-info"><strong>{job.project_id || "Project"}</strong><small>{job.job_id} · {formatTime(job.created_at)}</small>
                       {ACTIVE_STATUSES.has(job.status) && <span className="progress-track"><span style={{ width: `${percentage}%` }} /></span>}
@@ -515,7 +582,12 @@ export default function App() {
               <table className="findings-table"><thead><tr><th>Severity</th><th>Finding</th><th>Location</th><th>Redacted evidence</th><th>Recommended remediation</th></tr></thead>
                 <tbody>{activeFindings.map((finding, index) => <tr key={`${finding.fingerprint || finding.rule_id}-${index}`}>
                   <td><span className={`severity-pill ${String(finding.severity || "info").toLowerCase()}`}>{String(finding.severity || "info").toUpperCase()}</span></td>
-                  <td><strong>{safeText(finding.description || finding.rule_id)}</strong><small>{finding.engine_name || finding.category || "Security"} · {finding.rule_id}</small></td>
+                  <td><strong>{safeText(finding.description || finding.rule_id)}</strong><small>{finding.engine_name || finding.category || "Security"} · {finding.rule_id}</small>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button className="button export-button" type="button" disabled={!finding.fingerprint || !!aiBusy || !scanResults} onClick={() => requestAI("explain", { finding_fingerprint: finding.fingerprint })}>Explain with AI</button>
+                      <button className="button export-button" type="button" disabled={!finding.fingerprint || !!aiBusy || !scanResults} onClick={() => requestAI("remediate", { finding_fingerprint: finding.fingerprint })}>Suggest fix</button>
+                    </div>
+                  </td>
                   <td><code>{safeText(finding.file_path || "—")}:{finding.line_number || 0}</code></td>
                   <td><code className="evidence">{safeText(finding.match_content || finding.raw_secret || "No code snippet")}</code></td>
                   <td>{safeText(finding.remediation || "Review and remediate this finding.")}</td>
@@ -524,6 +596,28 @@ export default function App() {
                 </tbody></table>
             </div>
           </>}
+        </section>
+        <section className="panel glass-panel mt-4 rounded-xl p-5" aria-labelledby="ai-assistant-title">
+          <div className="section-title"><div><p className="eyebrow">OPTIONAL ASSISTANCE</p><h2 id="ai-assistant-title">Gemini security assistant</h2></div></div>
+          <p className="muted">AI suggestions are unverified and are never applied automatically. Only redacted finding metadata and your question are sent; source files and evidence are not sent.</p>
+          <label className="my-3 flex items-start gap-2 text-sm text-slate-300">
+            <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
+            I agree to send this scan’s redacted metadata and my question to Google Gemini for this request.
+          </label>
+          <div className="flex flex-wrap gap-2">
+            <button className="button export-button" type="button" disabled={!scanResults || !!aiBusy} onClick={() => requestAI("summary")}>{aiBusy === "summary" ? "Generating…" : "Generate executive summary"}</button>
+          </div>
+          <form className="mt-3 flex flex-wrap gap-2" onSubmit={submitAIQuestion}>
+            <input className="min-w-[220px] flex-1 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={aiQuestion} maxLength={2000} onChange={(event) => setAiQuestion(event.target.value)} placeholder="Ask about this selected scan…" aria-label="Ask the AI assistant" />
+            <button className="button primary-button" type="submit" disabled={!scanResults || !!aiBusy || !aiQuestion.trim()}>{aiBusy === "chat" ? "Asking…" : "Ask AI"}</button>
+          </form>
+          {aiEntries.length > 0 && <div className="mt-4 grid gap-3">
+            {aiEntries.map((entry) => <article className="rounded-lg border border-slate-700 bg-slate-950/50 p-4" key={entry.cache_key}>
+              <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400"><strong className="uppercase text-cyan-300">{entry.task} · AI-assisted, unverified</strong><span>{entry.cached ? "Cached response" : `${entry.generation_time_ms} ms model response`} · {formatTime(entry.created_at)}</span></div>
+              {entry.question && <p className="mb-2 text-sm text-cyan-100">You asked: {safeText(entry.question)}</p>}
+              <p className="whitespace-pre-wrap text-sm text-slate-200">{safeText(entry.response)}</p>
+            </article>)}
+          </div>}
         </section>
         <footer className="footer">Secret Leak Guard <span>·</span> Findings and exports are redacted before leaving the API.</footer>
       </main>

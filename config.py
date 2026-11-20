@@ -43,6 +43,12 @@ class Config:
     VAULT_DATABASE_MOUNT_POINT: str = os.getenv("VAULT_DATABASE_MOUNT_POINT", "database")
     VAULT_DATABASE_FALLBACK: bool = os.getenv("VAULT_DATABASE_FALLBACK", "false").lower() in ("true", "1", "yes")
     MONGO_AUTH_SOURCE: str = os.getenv("MONGO_AUTH_SOURCE", "admin")
+    AI_PROVIDER: str = os.getenv("AI_PROVIDER", "gemini").strip().lower()
+    GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+    GEMINI_TIMEOUT_SECONDS: int = int(os.getenv("GEMINI_TIMEOUT_SECONDS", "15"))
+    GROQ_API_KEY: str = os.getenv("GROQ_API_KEY", "")
+    GROQ_MODEL: str = os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
 
     # Workspace & Ingestion settings
     # Default to system temp dir or /tmp/scanner_workspaces
