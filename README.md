@@ -269,8 +269,10 @@ redacted evidence, and remediation guidance. Historical risk scores are shown
 for the selected project.
 
 Scan records, status polling, results, metrics, and AI history are scoped to the
-authenticated user. The dashboard restores the selected scan after refresh;
-MongoDB's existing 30-day TTL policy still applies.
+authenticated user. After refresh, no previous scan is selected automatically;
+choose one from Recent scans to view its saved results. Editing the project
+identifier clears displayed results so they cannot be confused with the next
+scan. MongoDB's existing 30-day TTL policy still applies.
 
 The optional AI assistant supports Gemini and Groq. Set `AI_PROVIDER` and the
 matching `GEMINI_API_KEY`/`GROQ_API_KEY` plus model setting in `.env`, or seed

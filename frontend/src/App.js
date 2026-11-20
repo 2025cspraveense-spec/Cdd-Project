@@ -162,6 +162,7 @@ export default function App() {
   const [aiBusy, setAiBusy] = useState("");
   const [aiEntries, setAiEntries] = useState([]);
   const [aiQuestion, setAiQuestion] = useState("");
+  const [aiOpen, setAiOpen] = useState(false);
 
   const selectedJob = jobs.find((job) => job.job_id === selectedJobId);
   const findings = scanResults?.findings || [];
@@ -221,10 +222,7 @@ export default function App() {
           setJobs(scans);
           setSelectedJobId((current) => {
             if (scans.some((scan) => scan.job_id === current)) return current;
-            const remembered = window.localStorage.getItem("slg_selected_scan");
-            return scans.some((scan) => scan.job_id === remembered)
-              ? remembered
-              : (scans[0]?.job_id || "");
+            return "";
           });
           setApiError("");
         }
@@ -271,6 +269,10 @@ export default function App() {
       window.clearInterval(timer);
     };
   }, [activeJobIds, token]);
+
+  useEffect(() => {
+    if (selectedJob?.project_id) setProjectId(selectedJob.project_id);
+  }, [selectedJob?.job_id, selectedJob?.project_id]);
 
   useEffect(() => {
     if (!token || !selectedJobId || selectedJob?.status !== "COMPLETED") {
@@ -395,7 +397,6 @@ export default function App() {
       };
       setJobs((current) => [job, ...current.filter((item) => item.job_id !== job.job_id)]);
       setSelectedJobId(job.job_id);
-      window.localStorage.setItem("slg_selected_scan", job.job_id);
       setScanResults(null);
       if (mode === "archive") setArchive(null);
       setTarget("");
@@ -430,7 +431,7 @@ export default function App() {
 
   async function requestAI(task, extra = {}) {
     if (!aiConsent) {
-      setApiError("Confirm the AI data-sharing consent before requesting Gemini assistance.");
+      setApiError("Confirm the AI data-sharing consent before sending this request.");
       return null;
     }
     if (!selectedJobId) return null;
@@ -511,7 +512,14 @@ export default function App() {
             </div>
             <form className="scan-form" onSubmit={handleStartScan}>
               <label htmlFor="project-id">Project identifier</label>
-              <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="project-id" value={projectId} maxLength={120} required onChange={(event) => setProjectId(event.target.value)} placeholder="e.g. payments-api" />
+              <input className="w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-600 focus:border-cyan-400" id="project-id" value={projectId} maxLength={120} required onChange={(event) => {
+                const nextProjectId = event.target.value;
+                setProjectId(nextProjectId);
+                if (selectedJob && nextProjectId.trim() !== selectedJob.project_id) {
+                  setSelectedJobId("");
+                  setScanResults(null);
+                }
+              }} placeholder="e.g. payments-api" />
               {mode === "archive" && <div className="upload-area">
                 <input id="archive-file" className="visually-hidden" type="file" accept=".zip,.tar,.tar.gz,.tgz" onChange={(event) => setArchive(event.target.files?.[0] || null)} />
                 <label htmlFor="archive-file" className="upload-label"><span className="upload-icon">↑</span><strong>{archive?.name || "Choose a project archive"}</strong><small>ZIP, TAR.GZ or TGZ · subject to server upload limit</small></label>
@@ -531,7 +539,7 @@ export default function App() {
               {jobs.length === 0 ? <div className="empty-state"><span>⌁</span><strong>No scans yet</strong><p>Launch a scan to see progress and results here.</p></div> : <div className="jobs-list">
                 {jobs.map((job) => {
                   const percentage = Math.max(0, Math.min(100, Number(job.progress?.percentage || (job.status === "COMPLETED" ? 100 : 0))));
-                  return <button type="button" key={job.job_id} className={`job-row ${selectedJobId === job.job_id ? "selected" : ""}`} onClick={() => { setSelectedJobId(job.job_id); window.localStorage.setItem("slg_selected_scan", job.job_id); setProjectId(job.project_id || projectId); }}>
+                  return <button type="button" key={job.job_id} className={`job-row ${selectedJobId === job.job_id ? "selected" : ""}`} onClick={() => { setSelectedJobId(job.job_id); setProjectId(job.project_id || projectId); }}>
                     <span className={`job-state ${String(job.status).toLowerCase()}`}><i className="status-dot" />{job.status || "UNKNOWN"}</span>
                     <span className="job-info"><strong>{job.project_id || "Project"}</strong><small>{job.job_id} · {formatTime(job.created_at)}</small>
                       {ACTIVE_STATUSES.has(job.status) && <span className="progress-track"><span style={{ width: `${percentage}%` }} /></span>}
@@ -597,28 +605,40 @@ export default function App() {
             </div>
           </>}
         </section>
-        <section className="panel glass-panel mt-4 rounded-xl p-5" aria-labelledby="ai-assistant-title">
-          <div className="section-title"><div><p className="eyebrow">OPTIONAL ASSISTANCE</p><h2 id="ai-assistant-title">Gemini security assistant</h2></div></div>
-          <p className="muted">AI suggestions are unverified and are never applied automatically. Only redacted finding metadata and your question are sent; source files and evidence are not sent.</p>
+        {aiOpen && <section className="ai-chat-panel panel glass-panel rounded-xl p-5" aria-labelledby="ai-assistant-title">
+          <div className="section-title"><div><p className="eyebrow">OPTIONAL ASSISTANCE</p><h2 id="ai-assistant-title">Security AI chat</h2></div><button className="button quiet-button" type="button" onClick={() => setAiOpen(false)} aria-label="Close AI chat">×</button></div>
+          <p className="muted">AI suggestions are unverified and are never applied automatically. Only redacted scan metadata and your question are sent; source files and evidence are not sent.</p>
+          {!scanResults && <p className="ai-chat-empty" role="status">Select a completed scan to start a conversation.</p>}
           <label className="my-3 flex items-start gap-2 text-sm text-slate-300">
             <input type="checkbox" checked={aiConsent} onChange={(event) => setAiConsent(event.target.checked)} />
-            I agree to send this scan’s redacted metadata and my question to Google Gemini for this request.
+            I agree to send redacted scan metadata and my question to the configured AI provider for this request.
           </label>
           <div className="flex flex-wrap gap-2">
             <button className="button export-button" type="button" disabled={!scanResults || !!aiBusy} onClick={() => requestAI("summary")}>{aiBusy === "summary" ? "Generating…" : "Generate executive summary"}</button>
           </div>
           <form className="mt-3 flex flex-wrap gap-2" onSubmit={submitAIQuestion}>
-            <input className="min-w-[220px] flex-1 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={aiQuestion} maxLength={2000} onChange={(event) => setAiQuestion(event.target.value)} placeholder="Ask about this selected scan…" aria-label="Ask the AI assistant" />
+            <input className="min-w-[220px] flex-1 rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-sm text-slate-100" value={aiQuestion} maxLength={2000} onChange={(event) => setAiQuestion(event.target.value)} placeholder="Ask about this selected scan…" aria-label="Ask the AI assistant" disabled={!scanResults || !!aiBusy} />
             <button className="button primary-button" type="submit" disabled={!scanResults || !!aiBusy || !aiQuestion.trim()}>{aiBusy === "chat" ? "Asking…" : "Ask AI"}</button>
           </form>
-          {aiEntries.length > 0 && <div className="mt-4 grid gap-3">
-            {aiEntries.map((entry) => <article className="rounded-lg border border-slate-700 bg-slate-950/50 p-4" key={entry.cache_key}>
+          <div className="ai-chat-history" aria-live="polite">
+            {aiEntries.map((entry) => <article className="ai-chat-message rounded-lg border border-slate-700 bg-slate-950/50 p-4" key={entry.cache_key}>
               <div className="mb-2 flex flex-wrap items-center justify-between gap-2 text-xs text-slate-400"><strong className="uppercase text-cyan-300">{entry.task} · AI-assisted, unverified</strong><span>{entry.cached ? "Cached response" : `${entry.generation_time_ms} ms model response`} · {formatTime(entry.created_at)}</span></div>
               {entry.question && <p className="mb-2 text-sm text-cyan-100">You asked: {safeText(entry.question)}</p>}
               <p className="whitespace-pre-wrap text-sm text-slate-200">{safeText(entry.response)}</p>
             </article>)}
-          </div>}
-        </section>
+            {!aiEntries.length && scanResults && <p className="ai-chat-empty">Ask about your selected scan, or generate an executive summary.</p>}
+          </div>
+        </section>}
+        <button
+          className="button ai-chat-launcher primary-button"
+          type="button"
+          aria-expanded={aiOpen}
+          aria-label={aiOpen ? "Close AI chat" : "Open AI chat"}
+          onClick={() => setAiOpen((open) => !open)}
+        >
+          {aiOpen ? "Close AI Chat" : "AI Chat"}
+          {!scanResults && <span className="ai-chat-indicator">Select a scan</span>}
+        </button>
         <footer className="footer">Secret Leak Guard <span>·</span> Findings and exports are redacted before leaving the API.</footer>
       </main>
     </div>
